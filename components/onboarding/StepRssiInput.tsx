@@ -30,6 +30,7 @@ function rowToPoint(row: CsvMeasurementRow, index: number): MeasurementPoint | n
     y_px: row.y_px,
     rssi_24ghz: row.rssi_24ghz ?? null,
     rssi_5ghz: row.rssi_5ghz ?? null,
+    rssi_6ghz: row.rssi_6ghz ?? null,
     distance_m: null,
     csv_distance_m: row.distance_m ?? null,
     timestamp: row.timestamp || new Date().toISOString(),
@@ -94,6 +95,7 @@ export function StepRssiInput({ floorplan, ap, points, onChange }: StepRssiInput
         y_px: row.y_px ?? point.y_px,
         rssi_24ghz: row.rssi_24ghz ?? point.rssi_24ghz,
         rssi_5ghz: row.rssi_5ghz ?? point.rssi_5ghz,
+        rssi_6ghz: row.rssi_6ghz ?? point.rssi_6ghz ?? null,
         csv_distance_m: row.distance_m ?? point.csv_distance_m ?? null,
         timestamp: row.timestamp || point.timestamp,
         source: row.x_px !== null && row.x_px !== undefined ? "csv" : point.source,
@@ -148,6 +150,7 @@ export function StepRssiInput({ floorplan, ap, points, onChange }: StepRssiInput
               <th>y_px</th>
               <th>rssi_24ghz</th>
               <th>rssi_5ghz</th>
+              <th>rssi_6ghz</th>
               <th>distance_m</th>
               <th>timestamp</th>
             </tr>
@@ -178,6 +181,16 @@ export function StepRssiInput({ floorplan, ap, points, onChange }: StepRssiInput
                     max="-20"
                     value={point.rssi_5ghz ?? ""}
                     onChange={(event) => updatePoint(point.point_id, { rssi_5ghz: parseInputNumber(event.target.value) })}
+                  />
+                </td>
+                <td>
+                  <input
+                    type="number"
+                    min="-100"
+                    max="-20"
+                    value={point.rssi_6ghz ?? ""}
+                    onChange={(event) => updatePoint(point.point_id, { rssi_6ghz: parseInputNumber(event.target.value) })}
+                    placeholder="opcional"
                   />
                 </td>
                 <td>{point.distance_m === null ? "-" : point.distance_m.toFixed(2)}</td>
