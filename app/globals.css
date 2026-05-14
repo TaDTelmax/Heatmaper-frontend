@@ -675,6 +675,10 @@ textarea:focus-visible,
   background: var(--bg-3);
 }
 
+.resultTabs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .modeButton,
 .resultTabs button {
   min-height: 36px;
@@ -790,6 +794,188 @@ textarea:focus-visible,
 
 .rangeField input[type="range"]:hover {
   border: none;
+}
+
+.rfOptionGrid {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(2, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.toggleOption,
+.rfCapability {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  color: var(--text-2);
+  padding: 8px 11px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.toggleOption input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+
+.toggleOption span,
+.rfCapability {
+  min-width: 0;
+}
+
+.toggleOption span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.rfCapability svg,
+.toggleOption svg {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.rfLayoutEditor {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  padding: 12px;
+}
+
+.rfLayoutToolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 210px) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.compactMode {
+  min-height: 38px;
+}
+
+.rfLayoutTitle {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-3);
+  color: var(--text-2);
+  padding: 0 11px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.rfLayoutTitle svg {
+  color: var(--accent);
+}
+
+.compactSelect {
+  gap: 5px;
+}
+
+.rfLayoutCanvas {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-3);
+}
+
+.rfLayoutCanvas img,
+.rfLayoutCanvas svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.rfLayoutCanvas img {
+  object-fit: fill;
+  opacity: 0.82;
+  user-select: none;
+}
+
+.rfLayoutCanvas svg {
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.rfWallLine {
+  stroke: #111827;
+  stroke-width: 6;
+  stroke-linecap: round;
+  paint-order: stroke;
+  filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.55));
+}
+
+.rfWallPreview {
+  stroke: #111827;
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-dasharray: 14 10;
+  opacity: 0.72;
+}
+
+.rfWallLine.material-glass { stroke: #38bdf8; }
+.rfWallLine.material-wood { stroke: #a16207; }
+.rfWallLine.material-brick { stroke: #b45309; }
+.rfWallLine.material-concrete { stroke: #475569; }
+.rfWallLine.material-reinforced_concrete { stroke: #334155; }
+.rfWallLine.material-metal { stroke: #0f172a; }
+
+.rfWallPreview.material-glass { stroke: #38bdf8; }
+.rfWallPreview.material-wood { stroke: #a16207; }
+.rfWallPreview.material-brick { stroke: #b45309; }
+.rfWallPreview.material-concrete { stroke: #475569; }
+.rfWallPreview.material-reinforced_concrete { stroke: #334155; }
+.rfWallPreview.material-metal { stroke: #0f172a; }
+
+.rfRoomPolygon {
+  fill: rgba(34, 211, 238, 0.08);
+  stroke: rgba(34, 211, 238, 0.85);
+  stroke-width: 3;
+  stroke-dasharray: 10 7;
+}
+
+.rfPendingPoint circle {
+  fill: var(--warning);
+  stroke: #111827;
+  stroke-width: 3;
+}
+
+.rfPendingPoint text {
+  fill: #111827;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.88);
+  stroke-width: 4;
+  font-size: 12px;
+  font-weight: 800;
+  text-anchor: middle;
+}
+
+.rfLayoutSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.rfLayoutSummary span {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-3);
+  color: var(--text-2);
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 /* ============================================================
@@ -1136,6 +1322,252 @@ textarea:focus-visible,
 }
 
 /* ============================================================
+   RF WORKBENCH
+   ============================================================ */
+.rfWorkbench {
+  display: grid;
+  gap: 12px;
+}
+
+.rfToolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.layerToggles,
+.zoomTools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.layerToggle {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  background: var(--surface-soft);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.layerToggle.active {
+  border-color: rgba(34, 211, 238, 0.35);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.zoomTools {
+  justify-content: flex-end;
+}
+
+.zoomTools span {
+  min-width: 46px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.rfViewerGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.rfViewport {
+  min-height: 540px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #f8fafc;
+  display: grid;
+  place-items: center;
+  cursor: grab;
+  touch-action: none;
+}
+
+.rfViewport:active {
+  cursor: grabbing;
+}
+
+.rfScene {
+  position: relative;
+  width: min(100%, 1180px);
+  max-height: 74dvh;
+  background: #ffffff;
+  transform-origin: center center;
+  transition: transform 120ms var(--ease);
+  user-select: none;
+}
+
+.rfFloorLayer,
+.rfHeatmapLayer,
+.rfMarkerLayer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.rfFloorLayer,
+.rfHeatmapLayer {
+  object-fit: fill;
+  pointer-events: none;
+}
+
+.rfFloorLayer {
+  filter: contrast(1.08) saturate(0.35) opacity(0.82);
+}
+
+.rfHeatmapLayer {
+  mix-blend-mode: normal;
+}
+
+.rfMarkerLayer {
+  pointer-events: none;
+  overflow: visible;
+}
+
+.rfSurveyRay {
+  fill: none;
+  stroke: rgba(15, 23, 42, 0.4);
+  stroke-width: 2.5;
+  stroke-dasharray: 12 8;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.rfApMarker circle {
+  fill: rgba(13, 17, 23, 0.92);
+  stroke: var(--accent);
+  stroke-width: 4;
+}
+
+.rfApMarker svg {
+  color: var(--accent);
+}
+
+.rfMeasurementMarker circle {
+  fill: rgba(13, 17, 23, 0.9);
+  stroke: #ffffff;
+  stroke-width: 3;
+}
+
+.rfMeasurementMarker text {
+  fill: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+  text-anchor: middle;
+}
+
+.rfInspector {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
+  padding: 12px;
+}
+
+.inspectorHeader,
+.sectionTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.inspectorHeader svg,
+.sectionTitle svg {
+  color: var(--accent);
+}
+
+.compactRange {
+  gap: 8px;
+}
+
+.compactRange b {
+  color: var(--accent);
+}
+
+.rfLegend {
+  overflow-x: auto;
+  padding-bottom: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.rfLegendScale {
+  display: grid;
+  min-width: 520px;
+  gap: 0;
+}
+
+.rfLegendScale i {
+  height: 18px;
+  border-top: 1px solid rgba(17, 24, 39, 0.14);
+  border-bottom: 1px solid rgba(17, 24, 39, 0.14);
+}
+
+.rfLegendScale i:first-child {
+  border-left: 1px solid rgba(17, 24, 39, 0.14);
+  border-radius: 4px 0 0 4px;
+}
+
+.rfLegendScale i:last-of-type {
+  border-right: 1px solid rgba(17, 24, 39, 0.14);
+  border-radius: 0 4px 4px 0;
+}
+
+.rfLegendScale span {
+  min-width: 0;
+  padding-top: 4px;
+  color: var(--text-2);
+  font-size: 9px;
+  line-height: 1.1;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.rfLegendScale span:first-of-type {
+  text-align: left;
+}
+
+.rfLegendScale span:last-of-type {
+  text-align: right;
+}
+
+.compactFacts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.compactFacts .fact {
+  min-height: 58px;
+  padding: 10px;
+  background: var(--bg-3);
+}
+
+.roomAnalysisPanel {
+  display: grid;
+  gap: 10px;
+}
+
+.roomTable {
+  min-width: 1120px;
+}
+
+/* ============================================================
    LEGEND BAR
    ============================================================ */
 .legendBar {
@@ -1272,6 +1704,21 @@ textarea:focus-visible,
   .workspace {
     padding: 16px;
   }
+
+  .rfToolbar,
+  .rfViewerGrid,
+  .rfOptionGrid,
+  .rfLayoutToolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .zoomTools {
+    justify-content: flex-start;
+  }
+
+  .rfInspector {
+    order: -1;
+  }
 }
 
 /* ============================================================
@@ -1332,6 +1779,19 @@ textarea:focus-visible,
   .factGrid,
   .reviewFacts {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .rfViewport {
+    min-height: 360px;
+  }
+
+  .layerToggles {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .layerToggle {
+    justify-content: center;
   }
 }
 
