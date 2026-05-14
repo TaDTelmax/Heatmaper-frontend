@@ -42,6 +42,7 @@ function createManualPoint(pointId: string, coordinate: Coordinate): Measurement
     y_px: coordinate.y_px,
     rssi_24ghz: null,
     rssi_5ghz: null,
+    rssi_6ghz: null,
     distance_m: null,
     timestamp: nowIso(),
     source: "manual",
