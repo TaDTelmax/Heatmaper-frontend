@@ -1,6 +1,22 @@
 "use client";
 
-import { Download, FileJson, FileText, ImageDown, Table2 } from "lucide-react";
+import type { PointerEvent } from "react";
+import { useState } from "react";
+import {
+  Download,
+  Eye,
+  EyeOff,
+  FileJson,
+  FileText,
+  ImageDown,
+  Layers,
+  LocateFixed,
+  Minus,
+  Plus,
+  RadioTower,
+  Table2,
+  Wifi,
+} from "lucide-react";
 import { rssiLegendTicks } from "@/domain/heatmap/colorScale";
 import {
   buildProjectJson,
@@ -11,7 +27,7 @@ import {
   exportCsv,
 } from "@/services/exportService";
 import type { FloorplanImage, RouterPlacement, ScaleCalibration } from "@/types/floorplan";
-import type { HeatmapResult, WifiBand } from "@/types/heatmap";
+import type { HeatmapResult, WallSegment, WifiBand } from "@/types/heatmap";
 import { bandLabels } from "@/types/heatmap";
 import type { MeasurementPoint } from "@/types/measurement";
 
@@ -20,9 +36,16 @@ type StepFinalResultProps = {
   scale: ScaleCalibration;
   ap: RouterPlacement | null;
   points: MeasurementPoint[];
+  walls: WallSegment[];
   result: HeatmapResult | null;
   selectedBand: WifiBand;
   onSelectedBandChange: (band: WifiBand) => void;
+};
+
+type LayerToggleProps = {
+  active: boolean;
+  label: string;
+  onClick: () => void;
 };
 
 export function StepFinalResult({
@@ -30,27 +53,40 @@ export function StepFinalResult({
   scale,
   ap,
   points,
+  walls,
   result,
   selectedBand,
   onSelectedBandChange,
 }: StepFinalResultProps) {
+  const [showFloorplan, setShowFloorplan] = useState(true);
+  const [showHeatmap, setShowHeatmap] = useState(true);
+  const [showAp, setShowAp] = useState(true);
+  const [showPoints, setShowPoints] = useState(true);
+  const [showRfLayout, setShowRfLayout] = useState(true);
+  const [viewerOpacity, setViewerOpacity] = useState(result?.opacity ?? 0.68);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragOrigin, setDragOrigin] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null);
+
   if (!result) {
     return (
       <section className="stepPanel">
         <div className="emptyState compact">
           <strong>Heatmap ainda nao gerado.</strong>
-          <span>Volte uma etapa e gere os mapas das duas bandas.</span>
+          <span>Volte uma etapa e gere os mapas tri-band.</span>
         </div>
       </section>
     );
   }
 
   const finalResult = result;
-  const selectedOverlay = selectedBand === "24ghz" ? finalResult.overlay24 : finalResult.overlay5;
-  const selectedHeatmap = selectedBand === "24ghz" ? finalResult.heatmap24 : finalResult.heatmap5;
+  const selectedOverlay =
+    selectedBand === "24ghz" ? finalResult.overlay24 : selectedBand === "5ghz" ? finalResult.overlay5 : finalResult.overlay6;
+  const selectedHeatmap =
+    selectedBand === "24ghz" ? finalResult.heatmap24 : selectedBand === "5ghz" ? finalResult.heatmap5 : finalResult.heatmap6;
 
   function exportJson() {
-    downloadTextFile(buildProjectJson(floorplan, scale, ap, points, finalResult), "wifi-heatmap-projeto.json", "application/json;charset=utf-8");
+    downloadTextFile(buildProjectJson(floorplan, scale, ap, points, finalResult, walls), "wifi-heatmap-projeto.json", "application/json;charset=utf-8");
   }
 
   function exportPdf() {
@@ -64,46 +100,229 @@ export function StepFinalResult({
     downloadBlob(pdf, "wifi-heatmap-relatorio.pdf");
   }
 
+  function handlePanStart(event: PointerEvent<HTMLDivElement>) {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragOrigin({ x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y });
+  }
+
+  function handlePanMove(event: PointerEvent<HTMLDivElement>) {
+    if (!dragOrigin) return;
+    setPan({
+      x: dragOrigin.panX + event.clientX - dragOrigin.x,
+      y: dragOrigin.panY + event.clientY - dragOrigin.y,
+    });
+  }
+
+  function resetView() {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }
+
   return (
     <section className="stepPanel wide">
       <div className="stepHeader">
         <span className="stepIcon"><ImageDown size={18} /></span>
         <div>
           <h2>Resultado final</h2>
-          <p>Arquivos finais alinhados a {floorplan.width}x{floorplan.height}px.</p>
+          <p>Overlay RF continuo alinhado a {floorplan.width}x{floorplan.height}px.</p>
         </div>
       </div>
 
-      <div className="resultTabs" role="radiogroup" aria-label="Banda do overlay final">
-        {(["24ghz", "5ghz"] as WifiBand[]).map((band) => (
-          <button
-            key={band}
-            type="button"
-            className={selectedBand === band ? "active" : ""}
-            onClick={() => onSelectedBandChange(band)}
-            aria-checked={selectedBand === band}
-            role="radio"
+      <div className="rfWorkbench">
+        <div className="rfToolbar">
+          <div className="resultTabs" role="radiogroup" aria-label="Banda do overlay final">
+            {(["24ghz", "5ghz", "6ghz"] as WifiBand[]).map((band) => (
+              <button
+                key={band}
+                type="button"
+                className={selectedBand === band ? "active" : ""}
+                onClick={() => onSelectedBandChange(band)}
+                aria-checked={selectedBand === band}
+                role="radio"
+              >
+                {bandLabels[band]}
+              </button>
+            ))}
+          </div>
+
+          <div className="layerToggles" aria-label="Camadas do mapa">
+            <LayerToggle active={showFloorplan} label="Planta" onClick={() => setShowFloorplan((value) => !value)} />
+            <LayerToggle active={showHeatmap} label="Heatmap" onClick={() => setShowHeatmap((value) => !value)} />
+            <LayerToggle active={showAp} label="AP" onClick={() => setShowAp((value) => !value)} />
+            <LayerToggle active={showPoints} label="Pontos medidos" onClick={() => setShowPoints((value) => !value)} />
+            <LayerToggle active={showRfLayout} label="RF layout" onClick={() => setShowRfLayout((value) => !value)} />
+          </div>
+
+          <div className="zoomTools" aria-label="Zoom e pan">
+            <button className="iconButton" type="button" onClick={() => setZoom((value) => Math.max(0.65, Number((value - 0.15).toFixed(2))))} title="Diminuir zoom">
+              <Minus size={15} />
+            </button>
+            <span>{Math.round(zoom * 100)}%</span>
+            <button className="iconButton" type="button" onClick={() => setZoom((value) => Math.min(3, Number((value + 0.15).toFixed(2))))} title="Aumentar zoom">
+              <Plus size={15} />
+            </button>
+            <button className="iconButton" type="button" onClick={resetView} title="Centralizar">
+              <LocateFixed size={15} />
+            </button>
+          </div>
+        </div>
+
+        <div className="rfViewerGrid">
+          <div
+            className="rfViewport"
+            onPointerDown={handlePanStart}
+            onPointerMove={handlePanMove}
+            onPointerUp={() => setDragOrigin(null)}
+            onPointerCancel={() => setDragOrigin(null)}
           >
-            {bandLabels[band]}
-          </button>
-        ))}
+            <div
+              className="rfScene"
+              style={{
+                aspectRatio: `${floorplan.width} / ${floorplan.height}`,
+                transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              }}
+            >
+              {showFloorplan && <img className="rfFloorLayer" src={floorplan.dataUrl} alt="Planta baixa" draggable={false} />}
+              {showHeatmap && (
+                <img
+                  className="rfHeatmapLayer"
+                  src={selectedHeatmap.dataUrl}
+                  alt={`Heatmap ${bandLabels[selectedBand]}`}
+                  draggable={false}
+                  style={{ opacity: viewerOpacity }}
+                />
+              )}
+              <svg className="rfMarkerLayer" viewBox={`0 0 ${floorplan.width} ${floorplan.height}`} preserveAspectRatio="none" aria-hidden="true">
+                {showRfLayout &&
+                  walls.map((wall) => (
+                    <line
+                      key={wall.id ?? `${wall.start.x}-${wall.start.y}-${wall.end.x}-${wall.end.y}`}
+                      x1={wall.start.x}
+                      y1={wall.start.y}
+                      x2={wall.end.x}
+                      y2={wall.end.y}
+                      className={`rfWallLine material-${wall.material}`}
+                    />
+                  ))}
+                {showAp && ap && (
+                  <g className="rfApMarker" transform={`translate(${ap.ap_x_px} ${ap.ap_y_px})`}>
+                    <circle r="15" />
+                    <RadioTower size={22} x={-11} y={-11} />
+                  </g>
+                )}
+                {showPoints &&
+                  points.map((point) => (
+                    <g key={point.point_id} className="rfMeasurementMarker" transform={`translate(${point.x_px} ${point.y_px})`}>
+                      <circle r="11" />
+                      <text y="4">{point.point_id.replace(/^P/i, "")}</text>
+                    </g>
+                  ))}
+              </svg>
+            </div>
+          </div>
+
+          <aside className="rfInspector">
+            <div className="inspectorHeader">
+              <Wifi size={16} />
+              <strong>{bandLabels[selectedBand]} RF</strong>
+            </div>
+
+            <label className="field rangeField compactRange" htmlFor="viewer-opacity">
+              <span>
+                Opacidade
+                <b>{Math.round(viewerOpacity * 100)}%</b>
+              </span>
+              <input
+                id="viewer-opacity"
+                type="range"
+                min="0.15"
+                max="0.95"
+                step="0.01"
+                value={viewerOpacity}
+                onChange={(event) => setViewerOpacity(Number(event.target.value))}
+              />
+            </label>
+
+            <div className="rfLegend" aria-label="Legenda RSSI">
+              <div
+                className="rfLegendScale"
+                style={{ gridTemplateColumns: `repeat(${rssiLegendTicks.length}, minmax(24px, 1fr))` }}
+              >
+                {rssiLegendTicks.map((tick) => (
+                  <i key={tick.label} style={{ background: tick.color }} />
+                ))}
+                {rssiLegendTicks.map((tick) => (
+                  <span key={`${tick.label}-label`}>{tick.label}</span>
+                ))}
+              </div>
+            </div>
+
+            <div className="factGrid compactFacts">
+              <div className="fact"><span>Min RSSI</span><b>{selectedHeatmap.minRssi} dBm</b></div>
+              <div className="fact"><span>Max RSSI</span><b>{selectedHeatmap.maxRssi} dBm</b></div>
+              <div className="fact"><span>Media</span><b>{selectedHeatmap.avgRssi} dBm</b></div>
+              <div className="fact"><span>Cobertura</span><b>{selectedHeatmap.coveragePercentage}%</b></div>
+              <div className="fact"><span>Dead zones</span><b>{selectedHeatmap.deadZonePercentage}%</b></div>
+              <div className="fact"><span>Amostra</span><b>{selectedHeatmap.sampleStep}px</b></div>
+              <div className="fact"><span>Roaming</span><b>{selectedHeatmap.roomAnalysis[0]?.roamingQuality ?? 0}%</b></div>
+              <div className="fact"><span>Salas/zonas</span><b>{selectedHeatmap.roomAnalysis.length}</b></div>
+              <div className="fact"><span>Pontos definidos</span><b>{points.length}</b></div>
+              <div className="fact"><span>Pontos usados</span><b>{selectedHeatmap.pointAnalysis.length}</b></div>
+            </div>
+          </aside>
+        </div>
       </div>
 
-      <div className="resultGallery">
-        <ResultImage title="Planta original" src={floorplan.dataUrl} />
-        <ResultImage title="Planta com pontos" src={finalResult.floorWithPoints} />
-        <ResultImage title="Mapa 2.4GHz" src={finalResult.chart24} />
-        <ResultImage title="Mapa 5GHz" src={finalResult.chart5} />
-        <ResultImage title={`Overlay final ${bandLabels[selectedBand]}`} src={selectedOverlay} featured />
-      </div>
-
-      <div className="legendBar" aria-label="Legenda RSSI">
-        {rssiLegendTicks.map((stop) => (
-          <span key={stop.label}>
-            <i style={{ background: stop.color }} />
-            {stop.label}
-          </span>
-        ))}
+      <div className="roomAnalysisPanel">
+        <div className="sectionTitle">
+          <Layers size={16} aria-hidden="true" />
+          <strong>Analise por sala</strong>
+        </div>
+        {selectedHeatmap.roomAnalysis.length ? (
+          <div className="tableShell final">
+            <table className="dataTable roomTable">
+              <thead>
+                <tr>
+                  <th>Zona</th>
+                  <th>Area</th>
+                  <th>Amostras</th>
+                  <th>Media</th>
+                  <th>Melhor/Pior</th>
+                  <th>Cobertura</th>
+                  <th>Fraco</th>
+                  <th>Dead zone</th>
+                  <th>Roaming</th>
+                  <th>Throughput</th>
+                  <th>Latencia</th>
+                  <th>Canal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedHeatmap.roomAnalysis.map((room) => (
+                  <tr key={room.id}>
+                    <td>{room.name}</td>
+                    <td>{room.areaM2 === null ? `${room.areaPx}px2` : `${room.areaM2} m2`}</td>
+                    <td>{room.sampleCount}</td>
+                    <td>{room.avgRssi} dBm</td>
+                    <td>{room.bestRssi} / {room.worstRssi} dBm</td>
+                    <td>{room.coveragePercentage}%</td>
+                    <td>{room.weakCoveragePercentage}%</td>
+                    <td>{room.deadZonePercentage}%</td>
+                    <td>{room.roamingQuality}%</td>
+                    <td>{room.estimatedThroughputMbps} Mbps</td>
+                    <td>{room.estimatedLatencyMs} ms</td>
+                    <td>{room.channelQuality}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="emptyState compact">
+            <strong>Nenhuma zona indoor valida nesta banda.</strong>
+            <span>As salas detectadas aparecem aqui quando ha mascara interna e campo RF ativo.</span>
+          </div>
+        )}
       </div>
 
       <div className="exportGrid">
@@ -119,6 +338,10 @@ export function StepFinalResult({
           <Download size={16} />
           PNG 5
         </button>
+        <button className="secondaryButton" type="button" onClick={() => downloadDataUrl(finalResult.chart6, "wifi-heatmap-6ghz.png")}>
+          <Download size={16} />
+          PNG 6
+        </button>
         <button className="secondaryButton" type="button" onClick={() => downloadDataUrl(selectedOverlay, `wifi-heatmap-overlay-${selectedBand}.png`)}>
           <ImageDown size={16} />
           PNG overlay
@@ -132,59 +355,15 @@ export function StepFinalResult({
           PDF simples
         </button>
       </div>
-
-      <div className="factGrid">
-        <div className="fact">
-          <span>RSSI minimo</span>
-          <b>{selectedHeatmap.minRssi} dBm</b>
-        </div>
-        <div className="fact">
-          <span>RSSI maximo</span>
-          <b>{selectedHeatmap.maxRssi} dBm</b>
-        </div>
-        <div className="fact">
-          <span>RSSI medio</span>
-          <b>{selectedHeatmap.avgRssi} dBm</b>
-        </div>
-      </div>
-
-      <div className="tableShell final">
-        <table className="dataTable">
-          <thead>
-            <tr>
-              <th>point_id</th>
-              <th>x_px</th>
-              <th>y_px</th>
-              <th>rssi_24ghz</th>
-              <th>rssi_5ghz</th>
-              <th>distance_m</th>
-              <th>timestamp</th>
-            </tr>
-          </thead>
-          <tbody>
-            {points.map((point) => (
-              <tr key={point.point_id}>
-                <td>{point.point_id}</td>
-                <td>{point.x_px.toFixed(1)}</td>
-                <td>{point.y_px.toFixed(1)}</td>
-                <td>{point.rssi_24ghz ?? "-"}</td>
-                <td>{point.rssi_5ghz ?? "-"}</td>
-                <td>{point.distance_m === null ? "-" : point.distance_m.toFixed(2)}</td>
-                <td>{point.timestamp}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </section>
   );
 }
 
-function ResultImage({ title, src, featured = false }: { title: string; src: string; featured?: boolean }) {
+function LayerToggle({ active, label, onClick }: LayerToggleProps) {
   return (
-    <figure className={`resultImage ${featured ? "featured" : ""}`}>
-      <img src={src} alt={title} />
-      <figcaption>{title}</figcaption>
-    </figure>
+    <button className={`layerToggle ${active ? "active" : ""}`} type="button" onClick={onClick} aria-pressed={active}>
+      {active ? <Eye size={14} /> : <EyeOff size={14} />}
+      {label}
+    </button>
   );
 }
