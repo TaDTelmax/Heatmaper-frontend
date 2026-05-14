@@ -24,7 +24,7 @@ import {
   DEFAULT_IDW_POWER,
   composeHeatmapChart,
   composeOverlay,
-  createHouseMaskFromFloorplan,
+  createFloorplanRfModel,
   createHeatmapLayer,
   renderFloorWithPoints,
 } from "@/domain/heatmap/idw";
@@ -39,7 +39,7 @@ import {
   validateFloorplanFile,
 } from "@/domain/heatmap/validation";
 import type { FloorplanImage, RouterPlacement, ScaleCalibration } from "@/types/floorplan";
-import type { HeatmapResult, WifiBand } from "@/types/heatmap";
+import type { HeatmapResult, WallSegment, WifiBand } from "@/types/heatmap";
 import type { MeasurementPoint, ValidationIssue } from "@/types/measurement";
 
 type StepKey = "upload" | "scale" | "router" | "points" | "rssi" | "review" | "generate" | "result";
@@ -56,10 +56,10 @@ const steps: { key: StepKey; label: string; description: string }[] = [
 ];
 
 const defaultScale: ScaleCalibration = {
-  mode: "manual",
-  pxPerMeter: 50,
-  manualPxPerMeter: 50,
-  knownDistanceM: 3,
+  mode: "two-point",
+  pxPerMeter: 0,
+  manualPxPerMeter: 0,
+  knownDistanceM: 1,
   calibrationPoints: [],
 };
 
@@ -88,10 +88,14 @@ export default function Page() {
   const [scale, setScale] = useState<ScaleCalibration>(defaultScale);
   const [ap, setAp] = useState<RouterPlacement | null>(null);
   const [points, setPoints] = useState<MeasurementPoint[]>([]);
+  const [walls, setWalls] = useState<WallSegment[]>([]);
   const [result, setResult] = useState<HeatmapResult | null>(null);
   const [selectedBand, setSelectedBand] = useState<WifiBand>("24ghz");
-  const [overlayOpacity, setOverlayOpacity] = useState(0.68);
+  const [overlayOpacity, setOverlayOpacity] = useState(0.72);
   const [idwPower, setIdwPower] = useState(DEFAULT_IDW_POWER);
+  const [interpolationRadiusM, setInterpolationRadiusM] = useState(42);
+  const [gaussianBlurPx, setGaussianBlurPx] = useState(26);
+  const [useWallAttenuation, setUseWallAttenuation] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
   const currentIndex = steps.findIndex((step) => step.key === currentStep);
@@ -142,6 +146,7 @@ export default function Page() {
     setScale(defaultScale);
     setAp(null);
     setPoints([]);
+    setWalls([]);
     setResult(null);
     setGenerationError(null);
     setCurrentStep("scale");
@@ -154,6 +159,7 @@ export default function Page() {
     setScale(defaultScale);
     setAp(null);
     setPoints([]);
+    setWalls([]);
     setResult(null);
     setGenerationError(null);
   }
@@ -208,29 +214,51 @@ export default function Page() {
     setGenerationError(null);
     try {
       await new Promise((resolve) => window.requestAnimationFrame(resolve));
-      const houseMask = await createHouseMaskFromFloorplan(floorplan.dataUrl, floorplan.width, floorplan.height);
-      const heatmap24 = createHeatmapLayer(floorplan.width, floorplan.height, points, "24ghz", idwPower || DEFAULT_IDW_POWER, houseMask);
+      const rfModel = await createFloorplanRfModel(floorplan.dataUrl, floorplan.width, floorplan.height);
+      const engineOptions = {
+        power: idwPower || DEFAULT_IDW_POWER,
+        pxPerMeter: scale.pxPerMeter,
+        interpolationRadiusM,
+        gaussianBlurPx,
+        useWallAttenuation,
+        accessPoint: ap,
+        houseMask: rfModel.houseMask,
+        obstacleMap: useWallAttenuation ? rfModel.obstacleMap : null,
+        compartmentMap: rfModel.compartmentMap,
+        walls,
+      };
+      const heatmap24 = createHeatmapLayer(floorplan.width, floorplan.height, points, "24ghz", engineOptions);
       await new Promise((resolve) => window.requestAnimationFrame(resolve));
-      const heatmap5 = createHeatmapLayer(floorplan.width, floorplan.height, points, "5ghz", idwPower || DEFAULT_IDW_POWER, houseMask);
+      const heatmap5 = createHeatmapLayer(floorplan.width, floorplan.height, points, "5ghz", engineOptions);
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+      const heatmap6 = createHeatmapLayer(floorplan.width, floorplan.height, points, "6ghz", engineOptions);
       const floorWithPoints = await renderFloorWithPoints(floorplan.dataUrl, floorplan.width, floorplan.height, points, ap);
-      const [overlay24, overlay5] = await Promise.all([
+      const [overlay24, overlay5, overlay6] = await Promise.all([
         composeOverlay(floorplan.dataUrl, heatmap24.dataUrl, floorplan.width, floorplan.height, points, ap, overlayOpacity),
         composeOverlay(floorplan.dataUrl, heatmap5.dataUrl, floorplan.width, floorplan.height, points, ap, overlayOpacity),
+        composeOverlay(floorplan.dataUrl, heatmap6.dataUrl, floorplan.width, floorplan.height, points, ap, overlayOpacity),
       ]);
-      const [chart24, chart5] = await Promise.all([
+      const [chart24, chart5, chart6] = await Promise.all([
         composeHeatmapChart(overlay24, floorplan.width, floorplan.height, "2.4GHz"),
         composeHeatmapChart(overlay5, floorplan.width, floorplan.height, "5GHz"),
+        composeHeatmapChart(overlay6, floorplan.width, floorplan.height, "6GHz"),
       ]);
       setResult({
         heatmap24,
         heatmap5,
+        heatmap6,
         overlay24,
         overlay5,
+        overlay6,
         chart24,
         chart5,
+        chart6,
         floorWithPoints,
         generatedAt: new Date().toISOString(),
         power: idwPower || DEFAULT_IDW_POWER,
+        interpolationRadiusM,
+        gaussianBlurPx,
+        useWallAttenuation,
         opacity: overlayOpacity,
       });
       setCurrentStep("result");
@@ -273,6 +301,8 @@ export default function Page() {
       return (
         <StepGenerateHeatmap
           issues={currentIssues}
+          floorplan={floorplan}
+          walls={walls}
           opacity={overlayOpacity}
           power={idwPower}
           isGenerating={isGenerating}
@@ -282,6 +312,25 @@ export default function Page() {
           }}
           onPowerChange={(value) => {
             setIdwPower(value);
+            setResult(null);
+          }}
+          interpolationRadiusM={interpolationRadiusM}
+          gaussianBlurPx={gaussianBlurPx}
+          useWallAttenuation={useWallAttenuation}
+          onInterpolationRadiusChange={(value) => {
+            setInterpolationRadiusM(value);
+            setResult(null);
+          }}
+          onGaussianBlurChange={(value) => {
+            setGaussianBlurPx(value);
+            setResult(null);
+          }}
+          onUseWallAttenuationChange={(value) => {
+            setUseWallAttenuation(value);
+            setResult(null);
+          }}
+          onWallsChange={(value) => {
+            setWalls(value);
             setResult(null);
           }}
           onGenerate={generateHeatmaps}
@@ -294,6 +343,7 @@ export default function Page() {
         scale={scale}
         ap={ap}
         points={points}
+        walls={walls}
         result={result}
         selectedBand={selectedBand}
         onSelectedBandChange={setSelectedBand}
