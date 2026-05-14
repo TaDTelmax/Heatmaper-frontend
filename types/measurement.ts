@@ -15,6 +15,7 @@ export type MeasurementPoint = {
   y_px: number;
   rssi_24ghz: number | null;
   rssi_5ghz: number | null;
+  rssi_6ghz?: number | null;
   distance_m: number | null;
   timestamp: string;
   source: PointSource;
@@ -27,6 +28,7 @@ export type CsvMeasurementRow = {
   y_px?: number | null;
   rssi_24ghz?: number | null;
   rssi_5ghz?: number | null;
+  rssi_6ghz?: number | null;
   distance_m?: number | null;
   timestamp?: string | null;
 };

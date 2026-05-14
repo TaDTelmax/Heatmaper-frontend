@@ -29,4 +29,6 @@ export type ScaleCalibration = {
 export type RouterPlacement = {
   ap_x_px: number;
   ap_y_px: number;
+  frequency?: "2.4GHz" | "5GHz" | "dual";
+  txPower?: number;
 };

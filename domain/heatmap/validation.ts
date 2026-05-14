@@ -6,16 +6,30 @@ import type { MeasurementPoint, ValidationIssue } from "@/types/measurement";
 export const MIN_MEASUREMENT_POINTS = 1;
 export const RSSI_MIN = -100;
 export const RSSI_MAX = -20;
+export const REQUIRED_RSSI_BANDS: WifiBand[] = ["24ghz", "5ghz"];
 
 function issue(severity: ValidationIssue["severity"], message: string, code?: string, point_id?: string): ValidationIssue {
   return { severity, message, code, point_id };
 }
 
+function bandLabel(band: WifiBand): string {
+  if (band === "24ghz") return "2.4GHz";
+  if (band === "5ghz") return "5GHz";
+  return "6GHz";
+}
+
+function rssiForBand(point: MeasurementPoint, band: WifiBand, allowDerived6GHz: boolean): number | null {
+  if (band === "24ghz") return point.rssi_24ghz;
+  if (band === "5ghz") return point.rssi_5ghz;
+  if (point.rssi_6ghz !== null && point.rssi_6ghz !== undefined) return point.rssi_6ghz;
+  return allowDerived6GHz && point.rssi_5ghz !== null ? point.rssi_5ghz - 4.5 : null;
+}
+
 export function validateFloorplanFile(file: File): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const validType = ["image/png", "image/jpeg", "image/jpg"].includes(file.type);
+  const validType = ["image/png", "image/jpeg", "image/jpg", "image/svg+xml"].includes(file.type);
   if (!validType) {
-    issues.push(issue("error", "Use PNG ou JPG.", "floorplan_type"));
+    issues.push(issue("error", "Use PNG, SVG ou JPG.", "floorplan_type"));
   }
   if (file.size > 12 * 1024 * 1024) {
     issues.push(issue("error", "Arquivo acima de 12 MB.", "floorplan_size"));
@@ -99,8 +113,8 @@ export function validateRssi(points: MeasurementPoint[], bands: WifiBand[] = ["2
   const issues: ValidationIssue[] = [];
   for (const point of points) {
     for (const band of bands) {
-      const value = band === "24ghz" ? point.rssi_24ghz : point.rssi_5ghz;
-      const label = band === "24ghz" ? "2.4GHz" : "5GHz";
+      const value = rssiForBand(point, band, false);
+      const label = bandLabel(band);
       if (value === null || !Number.isFinite(value)) {
         issues.push(issue("error", `RSSI ${label} ausente.`, "rssi_required", point.point_id));
         continue;
@@ -131,7 +145,7 @@ export function validateHeatmapReadiness(
   issues.push(...validateScale(scale));
   issues.push(...validateRouter(ap, floorplan));
   issues.push(...validateMeasurementPoints(points, floorplan));
-  issues.push(...validateRssi(points));
+  issues.push(...validateRssi(points, REQUIRED_RSSI_BANDS));
   return issues;
 }
 
@@ -141,7 +155,7 @@ export function hasBlockingIssues(issues: ValidationIssue[]): boolean {
 
 export function averageRssi(points: MeasurementPoint[], band: WifiBand): number | null {
   const values = points
-    .map((point) => (band === "24ghz" ? point.rssi_24ghz : point.rssi_5ghz))
+    .map((point) => rssiForBand(point, band, band === "6ghz"))
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
   if (!values.length) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -149,8 +163,8 @@ export function averageRssi(points: MeasurementPoint[], band: WifiBand): number 
 
 export function bestPoint(points: MeasurementPoint[], band: WifiBand): MeasurementPoint | null {
   return points.reduce<MeasurementPoint | null>((best, point) => {
-    const value = band === "24ghz" ? point.rssi_24ghz : point.rssi_5ghz;
-    const bestValue = best ? (band === "24ghz" ? best.rssi_24ghz : best.rssi_5ghz) : null;
+    const value = rssiForBand(point, band, band === "6ghz");
+    const bestValue = best ? rssiForBand(best, band, band === "6ghz") : null;
     if (value === null) return best;
     if (bestValue === null || value > bestValue) return point;
     return best;
@@ -159,8 +173,8 @@ export function bestPoint(points: MeasurementPoint[], band: WifiBand): Measureme
 
 export function worstPoint(points: MeasurementPoint[], band: WifiBand): MeasurementPoint | null {
   return points.reduce<MeasurementPoint | null>((worst, point) => {
-    const value = band === "24ghz" ? point.rssi_24ghz : point.rssi_5ghz;
-    const worstValue = worst ? (band === "24ghz" ? worst.rssi_24ghz : worst.rssi_5ghz) : null;
+    const value = rssiForBand(point, band, band === "6ghz");
+    const worstValue = worst ? rssiForBand(worst, band, band === "6ghz") : null;
     if (value === null) return worst;
     if (worstValue === null || value < worstValue) return point;
     return worst;

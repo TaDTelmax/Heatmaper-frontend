@@ -1,6 +1,6 @@
 import { buildMeasurementsCsv } from "./csvService";
 import type { FloorplanImage, RouterPlacement, ScaleCalibration } from "@/types/floorplan";
-import type { HeatmapProject, HeatmapResult } from "@/types/heatmap";
+import type { HeatmapProject, HeatmapResult, RoomPolygon, WallSegment } from "@/types/heatmap";
 import type { MeasurementPoint } from "@/types/measurement";
 
 export function downloadDataUrl(dataUrl: string, filename: string): void {
@@ -30,6 +30,8 @@ export function buildProjectJson(
   ap: RouterPlacement | null,
   points: MeasurementPoint[],
   result: HeatmapResult | null,
+  walls: WallSegment[] = [],
+  rooms: RoomPolygon[] = [],
 ): string {
   const project: HeatmapProject = {
     version: 1,
@@ -45,12 +47,17 @@ export function buildProjectJson(
     scale,
     ap,
     points,
+    walls,
+    rooms,
     heatmap: result
       ? {
-          generatedAt: result.generatedAt,
-          power: result.power,
-          opacity: result.opacity,
-        }
+        generatedAt: result.generatedAt,
+        power: result.power,
+        interpolationRadiusM: result.interpolationRadiusM,
+        gaussianBlurPx: result.gaussianBlurPx,
+        useWallAttenuation: result.useWallAttenuation,
+        opacity: result.opacity,
+      }
       : undefined,
   };
   return JSON.stringify(project, null, 2);
@@ -75,7 +82,7 @@ export function createSimplePdfReport(params: {
     `AP: ${params.ap ? `${params.ap.ap_x_px.toFixed(1)}, ${params.ap.ap_y_px.toFixed(1)} px` : "nao definido"}`,
     `Pontos: ${params.points.length}`,
     "",
-    "point_id | x_px | y_px | rssi_24ghz | rssi_5ghz | distance_m",
+    "point_id | x_px | y_px | rssi_24ghz | rssi_5ghz | rssi_6ghz | distance_m",
     ...params.points.map((point) =>
       [
         point.point_id,
@@ -83,6 +90,7 @@ export function createSimplePdfReport(params: {
         point.y_px.toFixed(1),
         point.rssi_24ghz ?? "",
         point.rssi_5ghz ?? "",
+        point.rssi_6ghz ?? "",
         point.distance_m?.toFixed(2) ?? "",
       ].join(" | "),
     ),
