@@ -2,11 +2,13 @@
 
 import type { PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
-import { Flame, Info, Loader2, RadioTower, ScanLine, Wifi } from "lucide-react";
+import { Flame, Info, Loader2, RadioTower, ScanLine, Trash2, Wifi } from "lucide-react";
 import { materialLossProfiles } from "@/domain/heatmap/attenuation";
 import { DEFAULT_IDW_POWER } from "@/domain/heatmap/idw";
 import {
+  type AutoWallDetectionResult,
   createFloorplanMaterialSampler,
+  detectWallSegmentsFromFloorplan,
   detectWallMaterialFromTrace,
   type FloorplanMaterialSampler,
   type MaterialTraceAnalysis,
@@ -205,6 +207,7 @@ const wallMaterialOptions: { value: WallMaterial }[] = [
   { value: "brick" },
   { value: "concrete" },
   { value: "reinforced_concrete" },
+  { value: "stone" },
   { value: "metal" },
 ];
 
@@ -219,20 +222,30 @@ function makeId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
 }
 
+function wallKey(wall: WallSegment): string {
+  return wall.id ?? `${wall.start.x}:${wall.start.y}:${wall.end.x}:${wall.end.y}:${wall.material}`;
+}
+
 function RfLayoutEditor({ floorplan, walls, onWallsChange }: RfLayoutEditorProps) {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [material, setMaterial] = useState<WallMaterial>("drywall");
+  const [material, setMaterial] = useState<WallMaterial>("concrete");
   const [materialSampler, setMaterialSampler] = useState<FloorplanMaterialSampler | null>(null);
   const [samplerReady, setSamplerReady] = useState(false);
+  const [autoDetection, setAutoDetection] = useState<AutoWallDetectionResult | null>(null);
+  const [isDetectingWalls, setIsDetectingWalls] = useState(false);
   const [lastMaterialDetection, setLastMaterialDetection] = useState<MaterialTraceAnalysis | null>(null);
   const [pendingPoint, setPendingPoint] = useState<RfPoint | null>(null);
   const [hoverPoint, setHoverPoint] = useState<RfPoint | null>(null);
+  const [selectedWallKey, setSelectedWallKey] = useState<string | null>(null);
+  const autoDetectionKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setMaterialSampler(null);
     setSamplerReady(false);
+    setAutoDetection(null);
     setLastMaterialDetection(null);
+    setSelectedWallKey(null);
 
     createFloorplanMaterialSampler(floorplan.dataUrl, floorplan.width, floorplan.height)
       .then((sampler) => {
@@ -250,6 +263,22 @@ function RfLayoutEditor({ floorplan, walls, onWallsChange }: RfLayoutEditorProps
     };
   }, [floorplan.dataUrl, floorplan.width, floorplan.height]);
 
+  useEffect(() => {
+    if (!materialSampler || !samplerReady || walls.length) return;
+    const key = `${floorplan.fileName}-${floorplan.width}x${floorplan.height}-${floorplan.fileSize}`;
+    if (autoDetectionKeyRef.current === key) return;
+    autoDetectionKeyRef.current = key;
+    const timer = window.setTimeout(() => runAutoWallDetection(), 0);
+    return () => window.clearTimeout(timer);
+  }, [floorplan.fileName, floorplan.fileSize, floorplan.width, floorplan.height, materialSampler, samplerReady, walls.length]);
+
+  useEffect(() => {
+    if (!selectedWallKey) return;
+    if (!walls.some((wall) => wallKey(wall) === selectedWallKey)) {
+      setSelectedWallKey(null);
+    }
+  }, [selectedWallKey, walls]);
+
   function coordinateFromEvent(event: PointerEvent<SVGSVGElement>): RfPoint {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
@@ -262,6 +291,7 @@ function RfLayoutEditor({ floorplan, walls, onWallsChange }: RfLayoutEditorProps
   function handleCanvasClick(event: PointerEvent<SVGSVGElement>) {
     const point = coordinateFromEvent(event);
     if (!pendingPoint) {
+      setSelectedWallKey(null);
       setPendingPoint(point);
       return;
     }
@@ -285,8 +315,47 @@ function RfLayoutEditor({ floorplan, walls, onWallsChange }: RfLayoutEditorProps
     ]);
     setMaterial(wallMaterial);
     setLastMaterialDetection(detected);
+    setSelectedWallKey(null);
     setPendingPoint(null);
     setHoverPoint(null);
+  }
+
+  function handleWallPointerDown(event: PointerEvent<SVGGElement>, key: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    setSelectedWallKey(key);
+    setPendingPoint(null);
+    setHoverPoint(null);
+  }
+
+  function undoLastWall() {
+    onWallsChange(walls.slice(0, -1));
+    setPendingPoint(null);
+    setHoverPoint(null);
+  }
+
+  function removeSelectedWall() {
+    if (!selectedWallKey) return;
+    onWallsChange(walls.filter((wall) => wallKey(wall) !== selectedWallKey));
+    setSelectedWallKey(null);
+    setPendingPoint(null);
+    setHoverPoint(null);
+  }
+
+  function runAutoWallDetection() {
+    if (!materialSampler) return;
+    setIsDetectingWalls(true);
+    window.requestAnimationFrame(() => {
+      const detected = detectWallSegmentsFromFloorplan(materialSampler, material);
+      onWallsChange(detected.walls);
+      setAutoDetection(detected);
+      setLastMaterialDetection(null);
+      if (detected.walls[0]) setMaterial(detected.walls[0].material);
+      setPendingPoint(null);
+      setHoverPoint(null);
+      setSelectedWallKey(null);
+      setIsDetectingWalls(false);
+    });
   }
 
   return (
@@ -306,8 +375,17 @@ function RfLayoutEditor({ floorplan, walls, onWallsChange }: RfLayoutEditorProps
           </select>
         </label>
 
-        <button className="secondaryButton" type="button" onClick={() => onWallsChange(walls.slice(0, -1))} disabled={!walls.length}>
+        <button className="secondaryButton" type="button" onClick={runAutoWallDetection} disabled={!materialSampler || isDetectingWalls}>
+          {isDetectingWalls ? "Detectando..." : "Detectar paredes"}
+        </button>
+
+        <button className="secondaryButton" type="button" onClick={undoLastWall} disabled={!walls.length}>
           Desfazer parede
+        </button>
+
+        <button className="dangerButton" type="button" onClick={removeSelectedWall} disabled={!selectedWallKey}>
+          <Trash2 size={15} aria-hidden="true" />
+          Remover parede
         </button>
       </div>
 
@@ -321,18 +399,39 @@ function RfLayoutEditor({ floorplan, walls, onWallsChange }: RfLayoutEditorProps
           onPointerMove={(event) => pendingPoint && setHoverPoint(coordinateFromEvent(event))}
           onPointerLeave={() => setHoverPoint(null)}
         >
-          {walls.map((wall) => (
-            <line
-              key={wall.id ?? `${wall.start.x}-${wall.start.y}-${wall.end.x}-${wall.end.y}`}
-              x1={wall.start.x}
-              y1={wall.start.y}
-              x2={wall.end.x}
-              y2={wall.end.y}
-              className={`rfWallLine material-${wall.material}`}
-            >
-              <title>{materialLabel(wall.material)}</title>
-            </line>
-          ))}
+          {walls.map((wall) => {
+            const key = wallKey(wall);
+            const selected = selectedWallKey === key;
+            return (
+              <g key={key} className={`rfWallGroup${selected ? " selected" : ""}`} onPointerDown={(event) => handleWallPointerDown(event, key)}>
+                <line
+                  x1={wall.start.x}
+                  y1={wall.start.y}
+                  x2={wall.end.x}
+                  y2={wall.end.y}
+                  className="rfWallHitTarget"
+                />
+                {selected && (
+                  <line
+                    x1={wall.start.x}
+                    y1={wall.start.y}
+                    x2={wall.end.x}
+                    y2={wall.end.y}
+                    className="rfWallSelectionHalo"
+                  />
+                )}
+                <line
+                  x1={wall.start.x}
+                  y1={wall.start.y}
+                  x2={wall.end.x}
+                  y2={wall.end.y}
+                  className={`rfWallLine material-${wall.material}`}
+                >
+                  <title>{materialLabel(wall.material)}</title>
+                </line>
+              </g>
+            );
+          })}
           {pendingPoint && hoverPoint && (
             <line
               x1={pendingPoint.x}
@@ -353,13 +452,19 @@ function RfLayoutEditor({ floorplan, walls, onWallsChange }: RfLayoutEditorProps
 
       <div className="rfLayoutSummary" aria-label="Resumo de paredes e salas">
         <span>{walls.length} parede(s)</span>
-        <span>{samplerReady ? "Deteccao de material ativa" : "Lendo tracado da planta"}</span>
+        <span>{samplerReady ? "Deteccao automatica ativa" : "Lendo tracado da planta"}</span>
+        {autoDetection && (
+          <span>
+            Auto: {autoDetection.horizontalCount} H / {autoDetection.verticalCount} V
+          </span>
+        )}
         {lastMaterialDetection && (
           <span>
             Material detectado: {materialLabel(lastMaterialDetection.material)} ({Math.round(lastMaterialDetection.confidence * 100)}%)
           </span>
         )}
-        <span>{pendingPoint ? "Segundo clique finaliza a parede" : "Dois cliques criam uma parede"}</span>
+        {selectedWallKey && <span>Parede selecionada</span>}
+        <span>{pendingPoint ? "Segundo clique finaliza o ajuste" : "Clique para ajuste manual"}</span>
       </div>
     </div>
   );
