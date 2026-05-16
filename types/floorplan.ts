@@ -29,6 +29,11 @@ export type ScaleCalibration = {
 export type RouterPlacement = {
   ap_x_px: number;
   ap_y_px: number;
-  frequency?: "2.4GHz" | "5GHz" | "dual";
+  frequency?: "2.4GHz" | "5GHz" | "6GHz" | "dual" | "tri-band";
   txPower?: number;
+  antennaGainDbi?: number;
+  antennaPattern?: "omni" | "directional";
+  antennaAzimuthDeg?: number;
+  channel?: number;
+  propagationRadiusM?: number;
 };
