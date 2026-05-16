@@ -10,13 +10,14 @@ type MaterialProfile = {
 };
 
 export const materialLossProfiles: Record<WallMaterial, MaterialProfile> = {
-  drywall: { label: "Gesso acartonado", attenuationDb: 3, reflectionFactor: 0.08, absorptionFactor: 0.22, penetrationFactor: 0.9 },
-  glass: { label: "Vidro", attenuationDb: 5, reflectionFactor: 0.18, absorptionFactor: 0.18, penetrationFactor: 0.72 },
-  wood: { label: "Madeira", attenuationDb: 4, reflectionFactor: 0.1, absorptionFactor: 0.28, penetrationFactor: 0.82 },
-  brick: { label: "Tijolo", attenuationDb: 8, reflectionFactor: 0.18, absorptionFactor: 0.46, penetrationFactor: 0.58 },
-  concrete: { label: "Concreto", attenuationDb: 12, reflectionFactor: 0.24, absorptionFactor: 0.62, penetrationFactor: 0.42 },
-  reinforced_concrete: { label: "Concreto armado", attenuationDb: 16, reflectionFactor: 0.34, absorptionFactor: 0.74, penetrationFactor: 0.28 },
-  metal: { label: "Metal / nucleo de elevador", attenuationDb: 22, reflectionFactor: 0.68, absorptionFactor: 0.86, penetrationFactor: 0.12 },
+  drywall: { label: "Gesso acartonado", attenuationDb: 4, reflectionFactor: 0.08, absorptionFactor: 0.22, penetrationFactor: 0.9 },
+  glass: { label: "Vidro", attenuationDb: 2.5, reflectionFactor: 0.16, absorptionFactor: 0.16, penetrationFactor: 0.76 },
+  wood: { label: "Madeira", attenuationDb: 3, reflectionFactor: 0.1, absorptionFactor: 0.28, penetrationFactor: 0.82 },
+  brick: { label: "Tijolo", attenuationDb: 11, reflectionFactor: 0.18, absorptionFactor: 0.46, penetrationFactor: 0.58 },
+  concrete: { label: "Concreto", attenuationDb: 22, reflectionFactor: 0.26, absorptionFactor: 0.64, penetrationFactor: 0.38 },
+  reinforced_concrete: { label: "Concreto armado", attenuationDb: 28, reflectionFactor: 0.38, absorptionFactor: 0.78, penetrationFactor: 0.22 },
+  stone: { label: "Pedra / granito", attenuationDb: 14, reflectionFactor: 0.24, absorptionFactor: 0.58, penetrationFactor: 0.44 },
+  metal: { label: "Metal / nucleo de elevador", attenuationDb: 42, reflectionFactor: 0.74, absorptionFactor: 0.9, penetrationFactor: 0.08 },
 };
 
 const bandProfiles: Record<
