@@ -8,7 +8,7 @@ export type RfPoint = {
   y: number;
 };
 
-export type WallMaterial = "drywall" | "glass" | "wood" | "brick" | "concrete" | "reinforced_concrete" | "metal";
+export type WallMaterial = "drywall" | "glass" | "wood" | "brick" | "concrete" | "reinforced_concrete" | "stone" | "metal";
 
 export type WallSegment = {
   id?: string;
