@@ -851,7 +851,7 @@ textarea:focus-visible,
 
 .rfLayoutToolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(150px, 210px) auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(150px, 210px) auto auto auto;
   gap: 8px;
   align-items: end;
 }
@@ -915,6 +915,31 @@ textarea:focus-visible,
   stroke-linecap: round;
   paint-order: stroke;
   filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.55));
+  pointer-events: none;
+}
+
+.rfWallGroup {
+  cursor: pointer;
+}
+
+.rfWallHitTarget {
+  stroke: transparent;
+  stroke-width: 18;
+  stroke-linecap: round;
+  pointer-events: stroke;
+}
+
+.rfWallSelectionHalo {
+  stroke: var(--warning);
+  stroke-width: 14;
+  stroke-linecap: round;
+  opacity: 0.86;
+  pointer-events: none;
+}
+
+.rfWallGroup.selected .rfWallLine {
+  stroke-width: 7;
+  filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.8));
 }
 
 .rfWallPreview {
@@ -930,6 +955,7 @@ textarea:focus-visible,
 .rfWallLine.material-brick { stroke: #b45309; }
 .rfWallLine.material-concrete { stroke: #475569; }
 .rfWallLine.material-reinforced_concrete { stroke: #334155; }
+.rfWallLine.material-stone { stroke: #64748b; }
 .rfWallLine.material-metal { stroke: #0f172a; }
 
 .rfWallPreview.material-glass { stroke: #38bdf8; }
@@ -937,6 +963,7 @@ textarea:focus-visible,
 .rfWallPreview.material-brick { stroke: #b45309; }
 .rfWallPreview.material-concrete { stroke: #475569; }
 .rfWallPreview.material-reinforced_concrete { stroke: #334155; }
+.rfWallPreview.material-stone { stroke: #64748b; }
 .rfWallPreview.material-metal { stroke: #0f172a; }
 
 .rfRoomPolygon {
@@ -1743,7 +1770,8 @@ textarea:focus-visible,
   }
 
   .primaryButton,
-  .secondaryButton {
+  .secondaryButton,
+  .dangerButton {
     width: 100%;
     justify-content: center;
   }
