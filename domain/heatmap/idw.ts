@@ -1,12 +1,12 @@
 import { rssiLegendTicks, rssiToColor } from "./colorScale";
 import { defaultInterpolationRadiusM, propagationLossDb } from "./attenuation";
 import { analyzeMeasurementPoints, analyzeRoomCoverage } from "./roomAnalysis";
-import { clamp, smoothstep } from "./spatial";
+import { clamp, segmentsIntersect, smoothstep } from "./spatial";
 import type { RouterPlacement } from "@/types/floorplan";
-import type { HeatmapEngineOptions, HeatmapLayer, ObstacleMap, RfEngineSettings, WifiBand } from "@/types/heatmap";
+import type { HeatmapEngineOptions, HeatmapLayer, ObstacleMap, RfEngineSettings, RfPoint, WifiBand } from "@/types/heatmap";
 import type { MeasurementPoint } from "@/types/measurement";
 
-export const DEFAULT_IDW_POWER = 2;
+export const DEFAULT_IDW_POWER = 2.2;
 export const IDW_ZERO_DISTANCE_EPSILON = 1e-9;
 
 type Rgb = [number, number, number];
@@ -15,6 +15,30 @@ type WeightedRssiPoint = {
   x_px: number;
   y_px: number;
   rssi: number;
+};
+
+type RfDutSource = {
+  x: number;
+  y: number;
+  txPowerDbm: number;
+  antennaGainDbi: number;
+  antennaPattern: "omni" | "directional";
+  antennaAzimuthDeg: number;
+  channel: number;
+  propagationRadiusM: number;
+};
+
+type DutPrediction = {
+  rssi: number;
+  wallLossDb: number;
+  shadowDb: number;
+  distanceM: number;
+};
+
+type DutCalibration = {
+  source: RfDutSource;
+  globalOffsetDb: number;
+  residuals: (WeightedRssiPoint & { residualDb: number })[];
 };
 
 type Bounds = {
@@ -45,8 +69,8 @@ function usablePointsForBand(points: MeasurementPoint[], band: WifiBand): Weight
 }
 
 const DEFAULT_COVERAGE_RSSI = -67;
-const DEFAULT_WEAK_RSSI = -75;
-const DEFAULT_DEAD_RSSI = -80;
+const DEFAULT_WEAK_RSSI = -68;
+const DEFAULT_DEAD_RSSI = -75;
 
 type NormalizedHeatmapOptions = HeatmapEngineOptions & {
   settings: RfEngineSettings;
@@ -58,6 +82,11 @@ type RfInterpolationResult = {
   nearestDistanceM: number;
   wallLossDb: number;
   shadowDb: number;
+};
+
+type MeasuredSignalMask = {
+  gridMask: Uint8Array;
+  pixelMask: Uint8Array | null;
 };
 
 export type FloorplanRfModel = {
@@ -106,6 +135,94 @@ function normalizeOptions(
     ...options,
     houseMask: options.houseMask ?? legacyHouseMask ?? null,
     settings,
+  };
+}
+
+const dutBandProfiles: Record<
+  WifiBand,
+  { referenceLoss1mDb: number; pathLossExponent: number; defaultChannel: number; defaultRadiusM: number }
+> = {
+  "24ghz": { referenceLoss1mDb: 52, pathLossExponent: 1.82, defaultChannel: 6, defaultRadiusM: 42 },
+  "5ghz": { referenceLoss1mDb: 56, pathLossExponent: 2.12, defaultChannel: 44, defaultRadiusM: 28 },
+  "6ghz": { referenceLoss1mDb: 58, pathLossExponent: 2.28, defaultChannel: 5, defaultRadiusM: 22 },
+};
+
+function normalizeDutSource(ap: RouterPlacement | null | undefined, band: WifiBand, settings: RfEngineSettings): RfDutSource | null {
+  if (!ap) return null;
+  const profile = dutBandProfiles[band];
+  return {
+    x: ap.ap_x_px,
+    y: ap.ap_y_px,
+    txPowerDbm: clamp(ap.txPower ?? 20, 0, 30),
+    antennaGainDbi: clamp(ap.antennaGainDbi ?? 3, 0, 12),
+    antennaPattern: ap.antennaPattern ?? "omni",
+    antennaAzimuthDeg: ap.antennaAzimuthDeg ?? 0,
+    channel: ap.channel ?? profile.defaultChannel,
+    propagationRadiusM: clamp(ap.propagationRadiusM ?? settings.interpolationRadiusM ?? profile.defaultRadiusM, 4, 120),
+  };
+}
+
+function angularDifferenceDeg(a: number, b: number): number {
+  const normalized = Math.abs((((a - b) % 360) + 540) % 360 - 180);
+  return normalized;
+}
+
+function antennaPatternLossDb(source: RfDutSource, target: RfPoint): number {
+  if (source.antennaPattern !== "directional") return 0;
+  const angle = (Math.atan2(target.y - source.y, target.x - source.x) * 180) / Math.PI;
+  const delta = angularDifferenceDeg(angle, source.antennaAzimuthDeg);
+  return smoothstep(35, 165, delta) * 14;
+}
+
+function predictDutRssi(
+  target: RfPoint,
+  source: RfDutSource,
+  band: WifiBand,
+  options: NormalizedHeatmapOptions,
+): DutPrediction {
+  const profile = dutBandProfiles[band];
+  const distanceM = Math.hypot(target.x - source.x, target.y - source.y) / Math.max(options.settings.pxPerMeter, 1);
+  const logDistanceLoss = profile.referenceLoss1mDb + 10 * profile.pathLossExponent * Math.log10(Math.max(distanceM, 1));
+  const loss = propagationLossDb({
+    start: { x: source.x, y: source.y },
+    end: target,
+    band,
+    pxPerMeter: options.settings.pxPerMeter,
+    walls: options.walls,
+    obstacleMap: options.obstacleMap,
+    useWallAttenuation: options.settings.useWallAttenuation,
+  });
+  const radiusPenalty = smoothstep(source.propagationRadiusM * 0.82, source.propagationRadiusM * 1.35, distanceM) * 18;
+  const patternPenalty = antennaPatternLossDb(source, target);
+  const eirpDbm = source.txPowerDbm + source.antennaGainDbi;
+  const rssi = eirpDbm - logDistanceLoss - loss.wallDb - loss.shadowDb + loss.diffractionCreditDb - radiusPenalty - patternPenalty;
+  return {
+    rssi: clamp(rssi, -96, -24),
+    wallLossDb: loss.wallDb,
+    shadowDb: loss.shadowDb,
+    distanceM,
+  };
+}
+
+function createDutCalibration(
+  source: RfDutSource | null,
+  points: WeightedRssiPoint[],
+  band: WifiBand,
+  options: NormalizedHeatmapOptions,
+): DutCalibration | null {
+  if (!source || !points.length) return null;
+  const residuals = points.map((point) => {
+    const prediction = predictDutRssi({ x: point.x_px, y: point.y_px }, source, band, options);
+    return {
+      ...point,
+      residualDb: clamp(point.rssi - prediction.rssi, -32, 32),
+    };
+  });
+  const globalOffsetDb = residuals.reduce((sum, point) => sum + point.residualDb, 0) / residuals.length;
+  return {
+    source,
+    globalOffsetDb: clamp(globalOffsetDb, -28, 28),
+    residuals,
   };
 }
 
@@ -169,19 +286,24 @@ function rfInterpolateUsable(
   points: WeightedRssiPoint[],
   band: WifiBand,
   options: NormalizedHeatmapOptions,
+  dutCalibration: DutCalibration | null = null,
 ): RfInterpolationResult {
   const settings = options.settings;
   const radiusPx = settings.interpolationRadiusM * settings.pxPerMeter;
   const target = { x, y };
+  const dutPrediction = dutCalibration ? predictDutRssi(target, dutCalibration.source, band, options) : null;
   let weightedSum = 0;
   let weightSum = 0;
+  let weightedResidual = 0;
+  let residualWeightSum = 0;
   let weightedWallLoss = 0;
   let weightedShadowLoss = 0;
   let maxFalloff = 0;
   let nearestPoint: WeightedRssiPoint | null = null;
   let nearestDistancePx = Number.POSITIVE_INFINITY;
 
-  for (const point of points) {
+  for (let pointIndex = 0; pointIndex < points.length; pointIndex += 1) {
+    const point = points[pointIndex];
     const distancePx = Math.hypot(x - point.x_px, y - point.y_px);
     if (distancePx <= IDW_ZERO_DISTANCE_EPSILON) {
       return { rssi: point.rssi, confidence: 1, nearestDistanceM: 0, wallLossDb: 0, shadowDb: 0 };
@@ -214,20 +336,53 @@ function rfInterpolateUsable(
     weightedShadowLoss += loss.shadowDb * weight;
     weightSum += weight;
     maxFalloff = Math.max(maxFalloff, radiusFalloff);
+
+    const residual = dutCalibration?.residuals[pointIndex];
+    if (dutPrediction && residual) {
+      const residualWeight = idwWeight(Math.max(effectiveDistancePx, 0.1), Math.max(settings.power, 2.2), settings.pxPerMeter * 0.1) * radiusFalloff;
+      weightedResidual += residual.residualDb * residualWeight;
+      residualWeightSum += residualWeight;
+    }
   }
 
   if (weightSum > 0) {
+    const measurementRssi = weightedSum / weightSum;
+    const calibratedDutRssi =
+      dutPrediction && dutCalibration
+        ? dutPrediction.rssi + (residualWeightSum > 0 ? weightedResidual / residualWeightSum : dutCalibration.globalOffsetDb)
+        : null;
+    const dutBlend =
+      calibratedDutRssi === null
+        ? 0
+        : clamp(
+            0.26 +
+              smoothstep(radiusPx * 0.16, radiusPx * 0.96, nearestDistancePx) * 0.38 +
+              smoothstep(6, 28, dutPrediction?.wallLossDb ?? 0) * 0.14,
+            0.18,
+            0.72,
+          );
+    const rssi = calibratedDutRssi === null ? measurementRssi : measurementRssi * (1 - dutBlend) + calibratedDutRssi * dutBlend;
     return {
-      rssi: weightedSum / weightSum,
+      rssi: clamp(rssi, -96, -24),
       confidence: clamp(0.18 + maxFalloff * 0.82, 0, 1),
       nearestDistanceM: nearestDistancePx / settings.pxPerMeter,
-      wallLossDb: weightedWallLoss / weightSum,
-      shadowDb: weightedShadowLoss / weightSum,
+      wallLossDb: Math.max(weightedWallLoss / weightSum, dutPrediction?.wallLossDb ?? 0),
+      shadowDb: Math.max(weightedShadowLoss / weightSum, dutPrediction?.shadowDb ?? 0),
     };
   }
 
   if (!nearestPoint) {
     throw new Error("IDW requer ao menos um ponto com RSSI.");
+  }
+
+  if (dutPrediction && dutCalibration) {
+    return {
+      rssi: clamp(dutPrediction.rssi + dutCalibration.globalOffsetDb, -96, -24),
+      confidence: clamp(0.12 + (1 - smoothstep(dutCalibration.source.propagationRadiusM * 0.9, dutCalibration.source.propagationRadiusM * 1.35, dutPrediction.distanceM)) * 0.34, 0.08, 0.46),
+      nearestDistanceM: nearestDistancePx / settings.pxPerMeter,
+      wallLossDb: dutPrediction.wallLossDb,
+      shadowDb: dutPrediction.shadowDb,
+    };
   }
 
   const source = { x: nearestPoint.x_px, y: nearestPoint.y_px };
@@ -428,7 +583,8 @@ function createCompartmentBarrierMask(
   walls: NormalizedHeatmapOptions["walls"],
   pxPerMeter: number,
 ): Uint8Array | null {
-  if (!compartmentMap && !walls?.length) return null;
+  const hasExplicitWalls = Boolean(walls?.length);
+  if (!compartmentMap && !hasExplicitWalls) return null;
 
   const barrier = new Uint8Array(width * height);
   let hasBarrier = false;
@@ -449,6 +605,14 @@ function createCompartmentBarrierMask(
   }
 
   return hasBarrier ? barrier : null;
+}
+
+function nearestSurveyPointDistancePx(x: number, y: number, points: WeightedRssiPoint[]): number {
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const point of points) {
+    nearest = Math.min(nearest, Math.hypot(x - point.x_px, y - point.y_px));
+  }
+  return nearest;
 }
 
 function nearestValidIndex(valid: Uint8Array, width: number, height: number, x: number, y: number): number {
@@ -492,7 +656,8 @@ function createMeasuredCompartmentMask(
   pxPerMeter: number,
   points: WeightedRssiPoint[],
 ): Uint8Array | null {
-  const barrier = createCompartmentBarrierMask(width, height, compartmentMap, walls, pxPerMeter);
+  const barrier = createCompartmentBarrierMask(width, height, null, walls, pxPerMeter);
+  void compartmentMap;
   if (!houseMask && !barrier) return null;
 
   const valid = new Uint8Array(width * height);
@@ -513,7 +678,7 @@ function createMeasuredCompartmentMask(
     pointSeeds[seedIndex] = 1;
     seedCount += 1;
   }
-  if (!seedCount || seedCount < points.length) return houseMask ?? null;
+  if (!seedCount) return null;
 
   const components = connectedMaskComponents(valid, width, height, false);
   const measured = new Uint8Array(width * height);
@@ -528,7 +693,7 @@ function createMeasuredCompartmentMask(
     }
   }
 
-  if (measuredPixels <= 0) return houseMask ?? null;
+  if (measuredPixels <= 0) return null;
 
   // Dividers split rooms, but only unmeasured room areas should disappear.
   if (barrier) {
@@ -540,6 +705,350 @@ function createMeasuredCompartmentMask(
   }
 
   return measured;
+}
+
+function createSurveyInfluenceMask(
+  width: number,
+  height: number,
+  baseMask: Uint8Array | null | undefined,
+  points: WeightedRssiPoint[],
+  walls: NormalizedHeatmapOptions["walls"],
+  maxReachPx: number,
+  featherPx: number,
+): Uint8Array | null {
+  if (!points.length || maxReachPx <= 0) return null;
+  const mask = new Uint8Array(width * height);
+  const solidReach = Math.max(1, maxReachPx - Math.max(featherPx, 1));
+  let activePixels = 0;
+
+  for (const point of points) {
+    const minX = clamp(Math.floor(point.x_px - maxReachPx), 0, width - 1);
+    const maxX = clamp(Math.ceil(point.x_px + maxReachPx), 0, width - 1);
+    const minY = clamp(Math.floor(point.y_px - maxReachPx), 0, height - 1);
+    const maxY = clamp(Math.ceil(point.y_px + maxReachPx), 0, height - 1);
+    const wallCheckStep = Math.max(3, Math.round(Math.max(width, height) / 360));
+    const wallBlockCache = new Map<number, boolean>();
+
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        const index = y * width + x;
+        if (baseMask && baseMask[index] !== 1) continue;
+        const distance = Math.hypot(x - point.x_px, y - point.y_px);
+        if (distance > maxReachPx) continue;
+        if (walls?.length && cellLineCrossesWall(point, x, y, walls, wallCheckStep, wallBlockCache)) continue;
+        const alpha = Math.round(255 * (1 - smoothstep(solidReach, maxReachPx, distance)));
+        if (alpha > mask[index]) {
+          if (mask[index] === 0) activePixels += 1;
+          mask[index] = alpha;
+        }
+      }
+    }
+  }
+
+  return activePixels > 0 ? mask : null;
+}
+
+function cellLineCrossesWall(
+  point: WeightedRssiPoint,
+  x: number,
+  y: number,
+  walls: NormalizedHeatmapOptions["walls"],
+  step: number,
+  cache: Map<number, boolean>,
+): boolean {
+  const cellX = Math.floor(x / step);
+  const cellY = Math.floor(y / step);
+  const key = cellY * 100000 + cellX;
+  const cached = cache.get(key);
+  if (cached !== undefined) return cached;
+  const target = {
+    x: cellX * step + step * 0.5,
+    y: cellY * step + step * 0.5,
+  };
+  const blocked = lineCrossesWall({ x: point.x_px, y: point.y_px }, target, walls);
+  cache.set(key, blocked);
+  return blocked;
+}
+
+function lineCrossesWall(start: { x: number; y: number }, end: { x: number; y: number }, walls: NormalizedHeatmapOptions["walls"]): boolean {
+  if (!walls?.length) return false;
+  const minX = Math.min(start.x, end.x);
+  const maxX = Math.max(start.x, end.x);
+  const minY = Math.min(start.y, end.y);
+  const maxY = Math.max(start.y, end.y);
+
+  for (const wall of walls) {
+    const wallMinX = Math.min(wall.start.x, wall.end.x) - 2;
+    const wallMaxX = Math.max(wall.start.x, wall.end.x) + 2;
+    const wallMinY = Math.min(wall.start.y, wall.end.y) - 2;
+    const wallMaxY = Math.max(wall.start.y, wall.end.y) + 2;
+    if (wallMaxX < minX || wallMinX > maxX || wallMaxY < minY || wallMinY > maxY) continue;
+    if (segmentsIntersect(start, end, wall.start, wall.end)) return true;
+  }
+
+  return false;
+}
+
+function applyAlphaMask(context: CanvasRenderingContext2D, width: number, height: number, alphaMask: Uint8Array | null | undefined): void {
+  if (!alphaMask) return;
+  const maskCanvas = document.createElement("canvas");
+  maskCanvas.width = width;
+  maskCanvas.height = height;
+  const maskContext = maskCanvas.getContext("2d");
+  if (!maskContext) return;
+  const imageData = maskContext.createImageData(width, height);
+  for (let index = 0; index < alphaMask.length; index += 1) {
+    const offset = index * 4;
+    imageData.data[offset] = 255;
+    imageData.data[offset + 1] = 255;
+    imageData.data[offset + 2] = 255;
+    imageData.data[offset + 3] = alphaMask[index];
+  }
+  maskContext.putImageData(imageData, 0, 0);
+  context.save();
+  context.globalCompositeOperation = "destination-in";
+  context.drawImage(maskCanvas, 0, 0);
+  context.restore();
+}
+
+function gridCellHasBarrier(
+  barrier: Uint8Array | null,
+  width: number,
+  height: number,
+  gridX: number,
+  gridY: number,
+  sampleStep: number,
+): boolean {
+  if (!barrier) return false;
+  const startX = Math.max(0, Math.floor(gridX * sampleStep));
+  const startY = Math.max(0, Math.floor(gridY * sampleStep));
+  const endX = Math.min(width - 1, Math.ceil((gridX + 1) * sampleStep));
+  const endY = Math.min(height - 1, Math.ceil((gridY + 1) * sampleStep));
+  const xStep = Math.max(1, Math.floor((endX - startX + 1) / 3));
+  const yStep = Math.max(1, Math.floor((endY - startY + 1) / 3));
+  for (let y = startY; y <= endY; y += yStep) {
+    for (let x = startX; x <= endX; x += xStep) {
+      if (barrier[y * width + x] === 1) return true;
+    }
+  }
+  return false;
+}
+
+function nearestPassableGridIndex(passable: Uint8Array, gridWidth: number, gridHeight: number, x: number, y: number, sampleStep: number): number {
+  const gx = clamp(Math.round(x / sampleStep), 0, gridWidth - 1);
+  const gy = clamp(Math.round(y / sampleStep), 0, gridHeight - 1);
+  const direct = gy * gridWidth + gx;
+  if (passable[direct] === 1) return direct;
+
+  const maxRadius = Math.max(2, Math.round(Math.max(gridWidth, gridHeight) * 0.018));
+  for (let radius = 1; radius <= maxRadius; radius += 1) {
+    let best = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let dy = -radius; dy <= radius; dy += 1) {
+      for (let dx = -radius; dx <= radius; dx += 1) {
+        if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
+        const sx = gx + dx;
+        const sy = gy + dy;
+        if (sx < 0 || sy < 0 || sx >= gridWidth || sy >= gridHeight) continue;
+        const index = sy * gridWidth + sx;
+        if (passable[index] !== 1) continue;
+        const distance = dx * dx + dy * dy;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = index;
+        }
+      }
+    }
+    if (best !== -1) return best;
+  }
+
+  return -1;
+}
+
+type HeapNode = {
+  index: number;
+  distance: number;
+};
+
+function heapPush(heap: HeapNode[], node: HeapNode): void {
+  heap.push(node);
+  let index = heap.length - 1;
+  while (index > 0) {
+    const parent = Math.floor((index - 1) / 2);
+    if (heap[parent].distance <= node.distance) break;
+    heap[index] = heap[parent];
+    index = parent;
+  }
+  heap[index] = node;
+}
+
+function heapPop(heap: HeapNode[]): HeapNode | null {
+  if (!heap.length) return null;
+  const root = heap[0];
+  const last = heap.pop();
+  if (!last || !heap.length) return root;
+
+  let index = 0;
+  while (true) {
+    const left = index * 2 + 1;
+    const right = left + 1;
+    if (left >= heap.length) break;
+    const child = right < heap.length && heap[right].distance < heap[left].distance ? right : left;
+    if (heap[child].distance >= last.distance) break;
+    heap[index] = heap[child];
+    index = child;
+  }
+  heap[index] = last;
+  return root;
+}
+
+function rasterizeGridMaskToPixelMask(
+  gridMask: Uint8Array,
+  gridWidth: number,
+  gridHeight: number,
+  sampleStep: number,
+  width: number,
+  height: number,
+  baseMask: Uint8Array | null | undefined,
+  barrier: Uint8Array | null,
+): Uint8Array | null {
+  const pixelMask = new Uint8Array(width * height);
+  let pixels = 0;
+
+  for (let gy = 0; gy < gridHeight; gy += 1) {
+    for (let gx = 0; gx < gridWidth; gx += 1) {
+      if (gridMask[gy * gridWidth + gx] !== 1) continue;
+      const startX = Math.max(0, Math.floor(gx * sampleStep));
+      const startY = Math.max(0, Math.floor(gy * sampleStep));
+      const endX = Math.min(width - 1, Math.ceil((gx + 1) * sampleStep));
+      const endY = Math.min(height - 1, Math.ceil((gy + 1) * sampleStep));
+      for (let y = startY; y <= endY; y += 1) {
+        for (let x = startX; x <= endX; x += 1) {
+          const index = y * width + x;
+          if (baseMask && baseMask[index] !== 1) continue;
+          if (barrier && barrier[index] === 1) continue;
+          if (pixelMask[index] !== 1) {
+            pixelMask[index] = 1;
+            pixels += 1;
+          }
+        }
+      }
+    }
+  }
+
+  return pixels > 0 ? pixelMask : null;
+}
+
+function createMeasuredSignalMask(params: {
+  width: number;
+  height: number;
+  gridWidth: number;
+  gridHeight: number;
+  sampleStep: number;
+  houseMask: Uint8Array | null | undefined;
+  compartmentMap: ObstacleMap | null | undefined;
+  walls: NormalizedHeatmapOptions["walls"];
+  pxPerMeter: number;
+  points: WeightedRssiPoint[];
+  maxReachPx: number;
+}): MeasuredSignalMask | null {
+  const barrier = createCompartmentBarrierMask(params.width, params.height, params.compartmentMap, params.walls, params.pxPerMeter);
+  const measuredCompartmentMask = createMeasuredCompartmentMask(
+    params.width,
+    params.height,
+    params.houseMask,
+    params.compartmentMap,
+    params.walls,
+    params.pxPerMeter,
+    params.points,
+  );
+  const baseMask = measuredCompartmentMask ?? params.houseMask ?? null;
+  const passable = new Uint8Array(params.gridWidth * params.gridHeight);
+  let passableCount = 0;
+
+  for (let gy = 0; gy < params.gridHeight; gy += 1) {
+    for (let gx = 0; gx < params.gridWidth; gx += 1) {
+      const x = Math.min(params.width - 1, Math.floor(gx * params.sampleStep + params.sampleStep * 0.5));
+      const y = Math.min(params.height - 1, Math.floor(gy * params.sampleStep + params.sampleStep * 0.5));
+      const pixelIndex = y * params.width + x;
+      if (baseMask && baseMask[pixelIndex] !== 1) continue;
+      if (gridCellHasBarrier(barrier, params.width, params.height, gx, gy, params.sampleStep)) continue;
+      passable[gy * params.gridWidth + gx] = 1;
+      passableCount += 1;
+    }
+  }
+
+  if (!passableCount) return null;
+
+  const distances = new Float32Array(passable.length);
+  distances.fill(Number.POSITIVE_INFINITY);
+  const heap: HeapNode[] = [];
+  let seedCount = 0;
+
+  for (const point of params.points) {
+    const seed = nearestPassableGridIndex(passable, params.gridWidth, params.gridHeight, point.x_px, point.y_px, params.sampleStep);
+    if (seed === -1 || distances[seed] === 0) continue;
+    distances[seed] = 0;
+    heapPush(heap, { index: seed, distance: 0 });
+    seedCount += 1;
+  }
+
+  if (!seedCount) return null;
+
+  const neighbors = [
+    [1, 0, 1],
+    [-1, 0, 1],
+    [0, 1, 1],
+    [0, -1, 1],
+    [1, 1, Math.SQRT2],
+    [-1, -1, Math.SQRT2],
+    [1, -1, Math.SQRT2],
+    [-1, 1, Math.SQRT2],
+  ] as const;
+
+  while (heap.length) {
+    const current = heapPop(heap);
+    if (!current || current.distance !== distances[current.index]) continue;
+    if (current.distance > params.maxReachPx) continue;
+    const gx = current.index % params.gridWidth;
+    const gy = Math.floor(current.index / params.gridWidth);
+
+    for (const [dx, dy, costFactor] of neighbors) {
+      const nx = gx + dx;
+      const ny = gy + dy;
+      if (nx < 0 || ny < 0 || nx >= params.gridWidth || ny >= params.gridHeight) continue;
+      const next = ny * params.gridWidth + nx;
+      if (passable[next] !== 1) continue;
+      const nextDistance = current.distance + params.sampleStep * costFactor;
+      if (nextDistance > params.maxReachPx || nextDistance >= distances[next]) continue;
+      distances[next] = nextDistance;
+      heapPush(heap, { index: next, distance: nextDistance });
+    }
+  }
+
+  const gridMask = new Uint8Array(passable.length);
+  let activeCount = 0;
+  for (let index = 0; index < distances.length; index += 1) {
+    if (distances[index] <= params.maxReachPx) {
+      gridMask[index] = 1;
+      activeCount += 1;
+    }
+  }
+
+  if (!activeCount) return null;
+  return {
+    gridMask,
+    pixelMask: rasterizeGridMaskToPixelMask(
+      gridMask,
+      params.gridWidth,
+      params.gridHeight,
+      params.sampleStep,
+      params.width,
+      params.height,
+      baseMask,
+      barrier,
+    ),
+  };
 }
 
 export function createHeatmapLayer(
@@ -558,7 +1067,12 @@ export function createHeatmapLayer(
   const maxDimension = Math.max(width, height);
   const options = normalizeOptions(band, width, height, powerOrOptions, houseMask);
   const settings = options.settings;
+  const dutSource = normalizeDutSource(options.accessPoint, band, settings);
+  const dutCalibration = createDutCalibration(dutSource, usable, band, options);
   const sampleStep = clamp(Math.round(maxDimension / 980), 3, 6);
+  const propagationRadiusM = Math.max(settings.interpolationRadiusM, dutSource?.propagationRadiusM ?? 0);
+  const surveyReachPx = Math.min(propagationRadiusM * settings.pxPerMeter, maxDimension * 0.52);
+  const dutReachPx = dutSource ? Math.min(dutSource.propagationRadiusM * settings.pxPerMeter, maxDimension * 0.58) : 0;
   const gridWidth = Math.ceil(width / sampleStep);
   const gridHeight = Math.ceil(height / sampleStep);
   const gridSize = gridWidth * gridHeight;
@@ -575,6 +1089,15 @@ export function createHeatmapLayer(
     settings.pxPerMeter,
     usable,
   );
+  const signalMask = createSurveyInfluenceMask(
+    width,
+    height,
+    measuredMask ?? options.houseMask,
+    dutSource ? [...usable, { x_px: dutSource.x, y_px: dutSource.y, rssi: -35 }] : usable,
+    options.walls,
+    surveyReachPx,
+    Math.max(sampleStep * 8, maxDimension * 0.018),
+  );
 
   let minRssi = Number.POSITIVE_INFINITY;
   let maxRssi = Number.NEGATIVE_INFINITY;
@@ -589,9 +1112,16 @@ export function createHeatmapLayer(
       const y = Math.min(height - 1, gy * sampleStep + sampleStep * 0.5);
       const maskIndex = Math.floor(y) * width + Math.floor(x);
       const gridIndex = gy * gridWidth + gx;
-      if (measuredMask ? measuredMask[maskIndex] !== 1 : options.houseMask && options.houseMask[maskIndex] !== 1) continue;
+      if (measuredMask) {
+        if (measuredMask[maskIndex] !== 1) continue;
+      } else {
+        if (options.houseMask && options.houseMask[maskIndex] !== 1) continue;
+        const nearSurvey = nearestSurveyPointDistancePx(x, y, usable) <= surveyReachPx;
+        const nearDut = dutSource ? Math.hypot(x - dutSource.x, y - dutSource.y) <= dutReachPx : false;
+        if (!nearSurvey && !nearDut) continue;
+      }
 
-      const interpolated = rfInterpolateUsable(x, y, usable, band, options);
+      const interpolated = rfInterpolateUsable(x, y, usable, band, options, dutCalibration);
       const obstaclePenalty = obstacleAtGridCenter(options.obstacleMap, x, y) ? 0.84 : 1;
       const shadowPenalty = clamp(interpolated.wallLossDb * 0.012 + interpolated.shadowDb * 0.03, 0, 0.3);
       values[gridIndex] = interpolated.rssi;
@@ -632,8 +1162,11 @@ export function createHeatmapLayer(
       const coverage = alpha[gridIndex];
       if (coverage <= 0.025) continue;
 
-      const [red, green, blue] = rssiToColor(surveyContourRssi(value));
-      const surveyAlpha = clamp(0.54 + coverage * 0.42 - shadow[gridIndex] * 0.06, 0, 0.96);
+      const displayRssi = value <= -85 ? value : surveyContourRssi(value);
+      const [red, green, blue] = rssiToColor(displayRssi);
+      const deadZoneLift = value <= settings.deadZoneThresholdRssi ? 0.08 : 0;
+      const criticalLift = value <= -85 ? 0.12 : 0;
+      const surveyAlpha = clamp(0.54 + coverage * 0.42 + deadZoneLift + criticalLift - shadow[gridIndex] * 0.06, 0, 0.98);
 
       imageData.data[offset] = red;
       imageData.data[offset + 1] = green;
@@ -654,7 +1187,13 @@ export function createHeatmapLayer(
   context.filter = `blur(${clamp(sampleStep * 0.62, 1.2, 4.2).toFixed(1)}px) saturate(1.16) contrast(1.06)`;
   context.drawImage(rawCanvas, 0, 0, width, height);
   context.filter = "none";
-  applyHouseMask(context, width, height, measuredMask ?? options.houseMask, settings.edgeFeatherPx);
+  if (measuredMask) {
+    applyHouseMask(context, width, height, measuredMask, Math.max(settings.edgeFeatherPx, sampleStep * 3));
+  } else if (signalMask) {
+    applyAlphaMask(context, width, height, signalMask);
+  } else {
+    applyHouseMask(context, width, height, options.houseMask, settings.edgeFeatherPx);
+  }
 
   const analysisContext = {
     values,
@@ -819,6 +1358,64 @@ function buildStructuralFootprintMask(components: MaskComponent[], width: number
   return footprint;
 }
 
+function createEnclosedAreaMaskFromBarrier(barrier: Uint8Array, width: number, height: number): Uint8Array | null {
+  const exterior = new Uint8Array(width * height);
+  const queue: number[] = [];
+  const enqueue = (x: number, y: number): void => {
+    if (x < 0 || y < 0 || x >= width || y >= height) return;
+    const index = y * width + x;
+    if (barrier[index] || exterior[index]) return;
+    exterior[index] = 1;
+    queue.push(index);
+  };
+
+  for (let x = 0; x < width; x += 1) {
+    enqueue(x, 0);
+    enqueue(x, height - 1);
+  }
+  for (let y = 0; y < height; y += 1) {
+    enqueue(0, y);
+    enqueue(width - 1, y);
+  }
+
+  const neighbors = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ] as const;
+
+  for (let head = 0; head < queue.length; head += 1) {
+    const index = queue[head];
+    const x = index % width;
+    const y = Math.floor(index / width);
+    for (const [dx, dy] of neighbors) {
+      enqueue(x + dx, y + dy);
+    }
+  }
+
+  const enclosed = new Uint8Array(width * height);
+  for (let index = 0; index < enclosed.length; index += 1) {
+    if (!exterior[index]) enclosed[index] = 1;
+  }
+
+  const components = connectedMaskComponents(enclosed, width, height, false);
+  const mask = new Uint8Array(width * height);
+  const minArea = Math.max(160, Math.round(width * height * 0.0022));
+  let keptPixels = 0;
+  for (const component of components) {
+    if (component.area < minArea) continue;
+    for (const pixel of component.pixels) {
+      mask[pixel] = 1;
+      keptPixels += 1;
+    }
+  }
+
+  const ratio = keptPixels / Math.max(width * height, 1);
+  if (keptPixels < minArea || ratio < 0.035 || ratio > 0.86) return null;
+  return mask;
+}
+
 function createHouseMaskFromPixels(imageData: ImageData, width: number, height: number): Uint8Array | null {
   const data = imageData.data;
   const edgeBackground = estimateEdgeBackground(data, width, height);
@@ -911,6 +1508,9 @@ function createHouseMaskFromPixels(imageData: ImageData, width: number, height: 
     const center = componentCenter(component);
     return component.area >= mainComponent.area * 0.018 && pointInsideBounds(center, mainBox);
   });
+
+  const enclosedMask = createEnclosedAreaMaskFromBarrier(barrier, width, height);
+  if (enclosedMask) return enclosedMask;
 
   const mask = buildStructuralFootprintMask(structuralComponents, width, height);
   return mask.some((value) => value === 1) ? mask : null;
