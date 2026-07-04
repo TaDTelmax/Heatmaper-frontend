@@ -223,6 +223,23 @@ function normalizeBandFromChannel(value: string | undefined): "24" | "5" | null 
   return null;
 }
 
+// Fallback for survey exports that carry an SSID but no channel/band column.
+// Router vendors almost always mark the 5GHz (and 6GHz) radio's SSID with a
+// suffix like "-5G"/"5GHz"/"6G", while the 2.4GHz radio keeps the bare SSID
+// — but that's a positive signal only in one direction: plenty of routers
+// run a single SSID with no band marker at all (or, per a same-name
+// dual-band setup, an *identical* SSID on both radios), so "no marker" must
+// NOT be read as "therefore 2.4GHz". Only fires on an explicit marker.
+function normalizeBandFromSsid(ssid: string | undefined): "24" | "5" | "6" | null {
+  if (!ssid) return null;
+  const text = normalizeHeader(ssid);
+  if (!text) return null;
+  if (/(^|_)6g(hz)?(_|$)/.test(text)) return "6";
+  if (/(^|_)5g(hz)?(_|$)/.test(text)) return "5";
+  if (/(^|_)2_4g(hz)?(_|$)/.test(text)) return "24";
+  return null;
+}
+
 function mergeRows(target: CsvMeasurementRow, source: CsvMeasurementRow): CsvMeasurementRow {
   return {
     point_id: target.point_id || source.point_id,
@@ -302,12 +319,13 @@ export function parseMeasurementCsv(text: string): CsvImportResult {
       pointId = generatedIdsByCoordinate.get(coordKey) as string;
     }
     if (!pointId) pointId = normalizeCsvPointId(undefined, lineIndex);
+    const ssid = pickFuzzy(row, ["ssid"])?.trim() || "";
     const band =
       normalizeBand(pickFuzzy(row, ["band", "banda", "frequency", "frequencia", "freq"])) ??
-      normalizeBandFromChannel(pickFuzzy(row, ["channel", "ch", "canal"]));
+      normalizeBandFromChannel(pickFuzzy(row, ["channel", "ch", "canal"])) ??
+      normalizeBandFromSsid(ssid);
     const genericRssi = parseNumber(pickFuzzy(row, ["rssi", "dbm", "signal", "sinal"]));
     const mac = pickFuzzy(row, ["mac", "bssid"])?.trim().toUpperCase() || null;
-    const ssid = pickFuzzy(row, ["ssid"])?.trim() || "";
     const parsed: CsvMeasurementRow = {
       point_id: pointId,
       x_px,

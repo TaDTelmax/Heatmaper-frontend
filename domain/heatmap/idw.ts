@@ -131,7 +131,7 @@ function normalizeOptions(
     gaussianBlurPx:
       Number.isFinite(options.gaussianBlurPx) && options.gaussianBlurPx !== undefined
         ? clamp(options.gaussianBlurPx, 0, Math.max(42, maxDimension * 0.06))
-        : clamp(maxDimension / 44, 22, 34),
+        : clamp(maxDimension / 65, 13, 22),
     pxPerMeter,
     useWallAttenuation: options.useWallAttenuation ?? true,
     coverageThresholdRssi: options.coverageThresholdRssi ?? DEFAULT_COVERAGE_RSSI,
@@ -166,16 +166,31 @@ const dutBandProfiles: Record<
 function normalizeDutSources(aps: RouterPlacement[] | null | undefined, band: WifiBand, settings: RfEngineSettings): RfDutSource[] {
   if (!aps?.length) return [];
   const profile = dutBandProfiles[band];
-  return aps.map((ap) => ({
-    x: ap.ap_x_px,
-    y: ap.ap_y_px,
-    txPowerDbm: clamp(ap.signalDbm !== undefined && ap.signalDbm > 0 ? ap.signalDbm : 20, 0, 30),
-    antennaGainDbi: clamp(ap.antennaGainDbi ?? 3, 0, 12),
-    antennaPattern: ap.antennaPattern ?? "omni",
-    antennaAzimuthDeg: ap.antennaAzimuthDeg ?? 0,
-    channel: ap.channel ?? profile.defaultChannel,
-    propagationRadiusM: clamp(ap.propagationRadiusM ?? settings.interpolationRadiusM ?? profile.defaultRadiusM, 4, 120),
-  }));
+  return aps.map((ap) => {
+    const antennaGainDbi = clamp(ap.antennaGainDbi ?? 3, 0, 12);
+    // ap.signalDbm holds the AP's real "Max Signal" spec (e.g. from a
+    // TamoGraph AP Info table: -25 dBm on 5GHz, -15 dBm on 2.4GHz) — the
+    // strongest RSSI ever observed close to the AP, always negative. Back out
+    // the equivalent TX power from the band's reference-loss-at-1m model
+    // (rssi@1m = eirp - referenceLoss1mDb) instead of using it directly as a
+    // transmit power, since the two are on different scales. The previous
+    // `ap.signalDbm > 0` check silently discarded every realistic (negative)
+    // Max Signal value and always fell back to a generic 20 dBm default.
+    const txPowerDbm =
+      ap.signalDbm !== undefined && ap.signalDbm < 0
+        ? clamp(ap.signalDbm + profile.referenceLoss1mDb - antennaGainDbi, 0, 30)
+        : 20;
+    return {
+      x: ap.ap_x_px,
+      y: ap.ap_y_px,
+      txPowerDbm,
+      antennaGainDbi,
+      antennaPattern: ap.antennaPattern ?? "omni",
+      antennaAzimuthDeg: ap.antennaAzimuthDeg ?? 0,
+      channel: ap.channel ?? profile.defaultChannel,
+      propagationRadiusM: clamp(ap.propagationRadiusM ?? settings.interpolationRadiusM ?? profile.defaultRadiusM, 4, 120),
+    };
+  });
 }
 
 function angularDifferenceDeg(a: number, b: number): number {
@@ -559,7 +574,7 @@ function blurWeightedFieldPass(
     const up = originalValues[clamp(gy - 1, 0, height - 1) * width + gx];
     const down = originalValues[clamp(gy + 1, 0, height - 1) * width + gx];
     const gradientDb = Math.hypot(right - left, down - up);
-    const preserve = smoothstep(5.5, 16, gradientDb) * 0.42;
+    const preserve = smoothstep(3.5, 12, gradientDb) * 0.78;
     values[index] = originalValues[index] * preserve + (blurredNumerator[index] / blurredDenominator[index]) * (1 - preserve);
     alpha[index] = clamp(blurredDenominator[index], 0, 1);
   }
@@ -1269,7 +1284,7 @@ export function createHeatmapLayer(
   if (!context) throw new Error("Canvas indisponivel para gerar heatmap.");
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
-  context.filter = `blur(${clamp(sampleStep * 1.05, 2.2, 13).toFixed(1)}px) saturate(1.22) contrast(1.02)`;
+  context.filter = `blur(${clamp(sampleStep * 0.55, 1.2, 6).toFixed(1)}px) saturate(1.22) contrast(1.02)`;
   context.drawImage(rawCanvas, 0, 0, width, height);
   context.filter = "none";
   // Each mask below further restricts (intersects, via destination-in
@@ -1278,16 +1293,33 @@ export function createHeatmapLayer(
   // real walls) would otherwise let signalMask's "only near an actual
   // measurement" restriction get silently skipped, undoing the point of
   // having it: any area with no nearby survey/DUT point must stay blank.
+  // Feather kept tight (small multiplier) so room/hull boundaries read as a
+  // clear map edge — like a wall blocking signal — rather than a soft fade
+  // that blends adjacent rooms into one diffuse blob.
   if (effectiveMeasuredMask) {
-    applyHouseMask(context, width, height, effectiveMeasuredMask, Math.max(settings.edgeFeatherPx, sampleStep * 4.5));
+    applyHouseMask(context, width, height, effectiveMeasuredMask, Math.max(settings.edgeFeatherPx, sampleStep * 1.4));
   } else {
     applyHouseMask(context, width, height, options.houseMask, settings.edgeFeatherPx);
   }
-  if (signalMask) {
+  // signalMask's point-proximity radius is only needed as a safety net for
+  // the *undifferentiated* fallback masks (measuredMask's single blob, or no
+  // mask at all) — colorRoomMask already fills a whole measured room exactly
+  // once it has any point in it, without leaking into unmeasured neighbors,
+  // so re-applying a small fixed-radius cut on top of it would re-introduce
+  // the same "gap in a room that does have a point" bug colorRoomMask exists
+  // to fix (reported directly: a room/corridor with any measurement should
+  // be filled to its own far walls, not just a blob around the exact point).
+  if (signalMask && !colorRoomMask) {
     applyAlphaMask(context, width, height, signalMask);
   }
   if (hullMask) {
-    applyHouseMask(context, width, height, hullMask, Math.max(settings.edgeFeatherPx, sampleStep * 4));
+    // Unlike effectiveMeasuredMask (which follows real walls — a crisp edge
+    // there reads correctly, "signal stops at the wall"), the hull is a
+    // straight-edged polygon connecting the outermost measured points: it
+    // has no physical boundary to be crisp *against*, so a tight feather
+    // just makes an arbitrary straight line look like a hard, artificial cut
+    // instead of the coverage naturally tapering off past the last reading.
+    applyHouseMask(context, width, height, hullMask, Math.max(settings.edgeFeatherPx, sampleStep * 4.5));
   }
 
   const analysisContext = {
@@ -1847,6 +1879,57 @@ export async function createHouseMaskFromFloorplan(
 // Returns null when fewer than a couple of large-enough regions are found
 // (the drawing has no flat per-room colors — e.g. after "Gerar Planta P&B"),
 // so callers can fall back to the existing behavior.
+// Windowed median over a single interleaved-RGBA channel, used only to
+// decide room-fill buckets (see createColorRoomRegions). Many real floor
+// plans draw a thin reference grid or material hatch *inside* an otherwise
+// flat room fill; at native resolution those lines quantize to a different
+// bucket than the fill around them and break the 4-connected flood fill
+// into disconnected slivers, so only whichever sliver a measurement point
+// happens to land in gets marked "measured" — the rest of the same visual
+// room stays blank.
+//
+// A box blur (tried first) averages the line's color into its neighbors,
+// which either isn't enough to cross back into the fill's bucket (thin
+// radius) or, widened enough to work, drags an otherwise-legitimate pale
+// room fill across the near-white cutoff and blanks the whole room instead.
+// A median doesn't have that failure mode: a thin line is a small minority
+// in any window that's mostly the surrounding fill, so the median is just
+// the fill's own value, completely unaffected by the line — while a real
+// boundary between two differently-colored rooms (occupying roughly half
+// the window on each side) still resolves to one side's actual color, never
+// an invented blend that could accidentally match neither region's bucket.
+function medianBlurChannel(data: Uint8ClampedArray, width: number, height: number, channel: number, radius: number): Uint8ClampedArray {
+  const result = new Uint8ClampedArray(width * height);
+  const windowSide = radius * 2 + 1;
+  const buffer = new Uint8ClampedArray(windowSide * windowSide);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      let count = 0;
+      for (let dy = -radius; dy <= radius; dy += 1) {
+        const sy = clamp(y + dy, 0, height - 1);
+        const rowBase = sy * width;
+        for (let dx = -radius; dx <= radius; dx += 1) {
+          const sx = clamp(x + dx, 0, width - 1);
+          buffer[count] = data[(rowBase + sx) * 4 + channel];
+          count += 1;
+        }
+      }
+      // Insertion sort: fast enough for a small fixed window (e.g. 25 elements).
+      for (let i = 1; i < count; i += 1) {
+        const value = buffer[i];
+        let j = i - 1;
+        while (j >= 0 && buffer[j] > value) {
+          buffer[j + 1] = buffer[j];
+          j -= 1;
+        }
+        buffer[j + 1] = value;
+      }
+      result[y * width + x] = buffer[count >> 1];
+    }
+  }
+  return result;
+}
+
 function createColorRoomRegions(
   imageData: ImageData,
   width: number,
@@ -1858,15 +1941,20 @@ function createColorRoomRegions(
   const NEAR_WHITE = 232;
   const NEAR_DARK = 70;
   const MIN_CHROMA = 10; // below this, treat as grayscale (wall/background), not a room fill
+  const HATCH_BLUR_RADIUS = 2;
+
+  const blurredR = medianBlurChannel(data, width, height, 0, HATCH_BLUR_RADIUS);
+  const blurredG = medianBlurChannel(data, width, height, 1, HATCH_BLUR_RADIUS);
+  const blurredB = medianBlurChannel(data, width, height, 2, HATCH_BLUR_RADIUS);
 
   const bucket = new Int32Array(width * height).fill(-1); // -1 = not a candidate room-fill pixel
   for (let index = 0; index < width * height; index += 1) {
     if (houseMask && houseMask[index] !== 1) continue;
     const offset = index * 4;
     if (data[offset + 3] <= 24) continue;
-    const r = data[offset];
-    const g = data[offset + 1];
-    const b = data[offset + 2];
+    const r = blurredR[index];
+    const g = blurredG[index];
+    const b = blurredB[index];
     if (r >= NEAR_WHITE && g >= NEAR_WHITE && b >= NEAR_WHITE) continue;
     const maxC = Math.max(r, g, b);
     const minC = Math.min(r, g, b);
@@ -1908,7 +1996,59 @@ function createColorRoomRegions(
     for (const index of pixels) map[index] = regionCount;
   }
 
+  if (regionCount > 0) fillEnclosedRoomHoles(map, houseMask, width, height);
+
   return regionCount > 0 ? { map, count: regionCount } : null;
+}
+
+// Absorbs small pockets of unclassified pixels (icon/symbol boxes, text
+// labels — anything with a near-white or low-chroma background, so it never
+// got a color bucket at all) into whichever single room region fully
+// encloses them. A room-color region already lets unclassified pixels
+// through unconditionally (see createColorRoomMeasuredMask), but leaving them
+// unabsorbed still means those exact icon-shaped pixels render as blank
+// holes over the heatmap when the underlying grid sample lands right on one
+// (the base floorplan behind shows through as a near-white patch instead of
+// the surrounding room's color). Holes that touch the image/house-mask
+// border, or border more than one distinct region, are left alone — either
+// they're not really "enclosed", or they straddle a real room boundary and
+// absorbing them would incorrectly merge two different rooms.
+function fillEnclosedRoomHoles(map: Int32Array, houseMask: Uint8Array | null | undefined, width: number, height: number): void {
+  const HOLE_MAX_AREA = Math.max(2000, Math.round(width * height * 0.004));
+  const visited = new Uint8Array(width * height);
+  const stack: number[] = [];
+
+  for (let seed = 0; seed < map.length; seed += 1) {
+    if (map[seed] !== 0 || visited[seed] || (houseMask && houseMask[seed] !== 1)) continue;
+    stack.length = 0;
+    stack.push(seed);
+    visited[seed] = 1;
+    const holePixels: number[] = [];
+    const borderRegions = new Set<number>();
+    let touchesOutside = false;
+
+    while (stack.length) {
+      const index = stack.pop() as number;
+      holePixels.push(index);
+      const x = index % width;
+      const y = (index - x) / width;
+      if (x === 0 || x === width - 1 || y === 0 || y === height - 1) touchesOutside = true;
+
+      const neighbors = [x > 0 ? index - 1 : -1, x < width - 1 ? index + 1 : -1, y > 0 ? index - width : -1, y < height - 1 ? index + width : -1];
+      for (let n = 0; n < neighbors.length; n += 1) {
+        const next = neighbors[n];
+        if (next < 0) { touchesOutside = true; continue; }
+        if (houseMask && houseMask[next] !== 1) { touchesOutside = true; continue; }
+        if (map[next] !== 0) { borderRegions.add(map[next]); continue; }
+        if (!visited[next]) { visited[next] = 1; stack.push(next); }
+      }
+      if (holePixels.length > HOLE_MAX_AREA) break;
+    }
+
+    if (touchesOutside || holePixels.length > HOLE_MAX_AREA || borderRegions.size !== 1) continue;
+    const [onlyRegion] = borderRegions;
+    for (const index of holePixels) map[index] = onlyRegion;
+  }
 }
 
 export async function createFloorplanRfModel(
