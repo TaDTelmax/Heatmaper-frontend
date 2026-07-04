@@ -45,10 +45,12 @@ export type RfEngineSettings = {
 };
 
 export type HeatmapEngineOptions = Partial<RfEngineSettings> & {
-  accessPoint?: RouterPlacement | null;
+  accessPoints?: RouterPlacement[];
   houseMask?: Uint8Array | null;
   obstacleMap?: ObstacleMap | null;
   compartmentMap?: ObstacleMap | null;
+  roomColorMap?: Int32Array | null;
+  roomColorCount?: number;
   walls?: WallSegment[];
   rooms?: RoomPolygon[];
 };
@@ -128,7 +130,7 @@ export type HeatmapProject = {
   version: 1;
   floorplan: Omit<FloorplanImage, "dataUrl"> & { dataUrl?: string };
   scale: ScaleCalibration;
-  ap: RouterPlacement | null;
+  aps: RouterPlacement[];
   points: MeasurementPoint[];
   walls?: WallSegment[];
   rooms?: RoomPolygon[];

@@ -4,25 +4,27 @@
   "private": true,
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('.next', { recursive: true, force: true })\"",
-    "predev": "npm run clean",
     "dev": "next dev",
+    "dev:clean": "npm run clean && next dev",
     "prebuild": "npm run clean",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
   },
   "dependencies": {
+    "lucide-react": "0.468.0",
     "next": "15.1.3",
+    "pdfjs-dist": "^6.0.227",
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "lucide-react": "0.468.0"
+    "sonner": "^2.0.7"
   },
   "devDependencies": {
     "@types/node": "22.10.2",
     "@types/react": "19.0.2",
     "@types/react-dom": "19.0.2",
-    "typescript": "5.7.2",
     "eslint": "9.17.0",
-    "eslint-config-next": "15.1.3"
+    "eslint-config-next": "15.1.3",
+    "typescript": "5.7.2"
   }
 }

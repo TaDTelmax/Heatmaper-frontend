@@ -1033,6 +1033,16 @@ textarea:focus-visible,
   touch-action: none;
 }
 
+.rssiPreview {
+  display: grid;
+  gap: 10px;
+}
+
+.rssiPreviewCanvas {
+  width: min(100%, 980px);
+  margin: 0 auto;
+}
+
 /* ============================================================
    SVG MARKERS
    ============================================================ */
@@ -1046,12 +1056,11 @@ textarea:focus-visible,
 .calibrationPoint circle {
   fill: var(--bg-3);
   stroke: var(--blue);
-  stroke-width: 4;
+  stroke-width: 2.6;
 }
 
 .calibrationPoint text {
   fill: var(--blue);
-  font-size: 14px;
   font-weight: 700;
   text-anchor: middle;
 }
@@ -1116,17 +1125,16 @@ textarea:focus-visible,
 .measurementMarker circle {
   fill: var(--bg-3);
   stroke: var(--accent);
-  stroke-width: 4;
+  stroke-width: 2.6;
 }
 
 .measurementMarker.selected circle {
   stroke: var(--warning);
-  stroke-width: 6;
+  stroke-width: 3.6;
 }
 
 .measurementMarker text {
   fill: var(--accent);
-  font-size: 13px;
   font-weight: 700;
   text-anchor: middle;
   pointer-events: none;
@@ -1159,6 +1167,16 @@ textarea:focus-visible,
 
 .inlineNotice {
   display: flex;
+}
+
+.surveyAlignPanel {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-soft);
 }
 
 /* ============================================================
@@ -1415,7 +1433,7 @@ textarea:focus-visible,
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  background: #f8fafc;
+  background: #ffffff;
   display: grid;
   place-items: center;
   cursor: grab;
@@ -1452,7 +1470,7 @@ textarea:focus-visible,
 }
 
 .rfFloorLayer {
-  filter: contrast(1.08) saturate(0.35) opacity(0.82);
+  filter: grayscale(1) contrast(0.78) brightness(1.22) opacity(0.52);
 }
 
 .rfHeatmapLayer {
@@ -1473,25 +1491,34 @@ textarea:focus-visible,
   vector-effect: non-scaling-stroke;
 }
 
-.rfApMarker circle {
-  fill: rgba(13, 17, 23, 0.92);
-  stroke: var(--accent);
-  stroke-width: 4;
+.rfApMarker {
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.26));
 }
 
-.rfApMarker svg {
-  color: var(--accent);
+.rfApHalo {
+  fill: rgba(242, 203, 57, 0.9);
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 1.8;
+}
+
+.rfApCore {
+  fill: rgba(255, 255, 255, 0.84);
+  stroke: #0891b2;
+  stroke-width: 1;
+}
+
+.rfApIcon {
+  color: #0891b2;
 }
 
 .rfMeasurementMarker circle {
   fill: rgba(13, 17, 23, 0.9);
   stroke: #ffffff;
-  stroke-width: 3;
+  stroke-width: 2;
 }
 
 .rfMeasurementMarker text {
   fill: #ffffff;
-  font-size: 12px;
   font-weight: 800;
   text-anchor: middle;
 }
@@ -1537,7 +1564,7 @@ textarea:focus-visible,
 
 .rfLegendScale {
   display: grid;
-  min-width: 520px;
+  min-width: 720px;
   gap: 0;
 }
 

@@ -14,7 +14,7 @@ import { Fact, IssueList } from "./StepUploadFloorplan";
 type StepReviewProps = {
   floorplan: FloorplanImage;
   scale: ScaleCalibration;
-  ap: RouterPlacement | null;
+  aps: RouterPlacement[];
   points: MeasurementPoint[];
 };
 
@@ -24,14 +24,14 @@ function pointLabel(point: MeasurementPoint | null, band: "24ghz" | "5ghz"): str
   return `${point.point_id} (${rssi ?? "-"} dBm)`;
 }
 
-export function StepReview({ floorplan, scale, ap, points }: StepReviewProps) {
+export function StepReview({ floorplan, scale, aps, points }: StepReviewProps) {
   const avg24 = averageRssi(points, "24ghz");
   const avg5 = averageRssi(points, "5ghz");
   const worst24 = worstPoint(points, "24ghz");
   const best24 = bestPoint(points, "24ghz");
   const worst5 = worstPoint(points, "5ghz");
   const best5 = bestPoint(points, "5ghz");
-  const issues = validateHeatmapReadiness(floorplan, scale, ap, points);
+  const issues = validateHeatmapReadiness(floorplan, scale, aps, points);
 
   return (
     <section className="stepPanel">
@@ -46,7 +46,7 @@ export function StepReview({ floorplan, scale, ap, points }: StepReviewProps) {
       <div className="factGrid reviewFacts">
         <Fact label="Dimensões" value={`${floorplan.width} × ${floorplan.height}px`} />
         <Fact label="Escala" value={`${scale.pxPerMeter.toFixed(2)} px/m`} />
-        <Fact label="Access Point" value={ap ? `${ap.ap_x_px.toFixed(1)}, ${ap.ap_y_px.toFixed(1)} px` : "—"} />
+        <Fact label="Access Points" value={aps.length ? aps.map((ap) => ap.ssid || ap.id.slice(0, 6)).join(", ") : "—"} />
         <Fact label="Pontos medidos" value={points.length} />
         <Fact label="RSSI médio 2.4 GHz" value={avg24 === null ? "—" : `${avg24.toFixed(1)} dBm`} />
         <Fact label="RSSI médio 5 GHz" value={avg5 === null ? "—" : `${avg5.toFixed(1)} dBm`} />

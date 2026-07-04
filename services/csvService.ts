@@ -1,4 +1,4 @@
-import type { CsvMeasurementRow, MeasurementPoint } from "@/types/measurement";
+import type { CsvMeasurementRow, MeasurementPoint, ValidationIssue } from "@/types/measurement";
 
 type CsvImportResult = {
   rows: CsvMeasurementRow[];
@@ -6,8 +6,10 @@ type CsvImportResult = {
   errors: string[];
 };
 
-const coordinateKeys = ["x_px", "x", "coord_x", "pos_x"];
-const coordinateYKeys = ["y_px", "y", "coord_y", "pos_y"];
+const coordinateKeys = ["x_px", "x", "coord_x", "pos_x", "x_lat", "xlat", "lat", "latitude"];
+const coordinateYKeys = ["y_px", "y", "coord_y", "pos_y", "y_lon", "ylon", "lon", "lng", "longitude"];
+const surveyCoordinateKeys = new Set(["x_lat", "xlat", "lat", "latitude", "y_lon", "ylon", "lon", "lng", "longitude"]);
+const SURVEY_IMPORT_TARGET_POINTS = 900;
 
 function normalizeHeader(value: string): string {
   return value
@@ -55,6 +57,31 @@ function parseNumber(value: string | undefined): number | null {
     : numericText.replace(/,/g, "");
   const number = Number(normalized);
   return Number.isFinite(number) ? number : null;
+}
+
+function rssiValue(target: number | null | undefined, source: number | null | undefined): number | null {
+  if (target === null || target === undefined) return source ?? null;
+  if (source === null || source === undefined) return target;
+  return source > target ? source : target;
+}
+
+function coordinateKey(x: number | null | undefined, y: number | null | undefined): string | null {
+  if (x === null || x === undefined || y === null || y === undefined) return null;
+  return `coord:${x.toFixed(6)}:${y.toFixed(6)}`;
+}
+
+function coordinateKind(header: string): CsvMeasurementRow["coordinate_kind"] {
+  return surveyCoordinateKeys.has(header) ? "survey" : "pixel";
+}
+
+function pickCoordinate(row: Record<string, string>, exactKeys: string[], fuzzyKeys: string[] = []): { value: string | undefined; kind: CsvMeasurementRow["coordinate_kind"] } {
+  for (const key of exactKeys) {
+    if (key in row) return { value: row[key], kind: coordinateKind(key) };
+  }
+  for (const key of Object.keys(row)) {
+    if (fuzzyKeys.some((fuzzy) => key.includes(fuzzy))) return { value: row[key], kind: coordinateKind(key) };
+  }
+  return { value: undefined, kind: null };
 }
 
 function countDelimiter(line: string, delimiter: string): number {
@@ -173,11 +200,26 @@ function pickBandRssi(row: Record<string, string>, band: "24" | "5" | "6"): stri
 }
 
 function normalizeBand(value: string | undefined): "24" | "5" | "6" | null {
+  const numeric = parseNumber(value);
+  if (numeric !== null) {
+    if ((numeric >= 2400 && numeric < 2500) || (numeric >= 2 && numeric < 3) || Math.round(numeric) === 24) return "24";
+    if ((numeric >= 4900 && numeric < 5925) || Math.round(numeric) === 5) return "5";
+    if ((numeric >= 5925 && numeric < 7125) || Math.round(numeric) === 6) return "6";
+  }
   const text = normalizeHeader(value ?? "");
   if (!text) return null;
   if (text.includes("2_4") || text.includes("24")) return "24";
+  if (text.includes("5ghz") || text === "5g" || text === "5") return "5";
+  if (text.includes("6ghz") || text === "6g" || text === "6") return "6";
   if (text.includes("5")) return "5";
-  if (text.includes("6")) return "6";
+  return null;
+}
+
+function normalizeBandFromChannel(value: string | undefined): "24" | "5" | null {
+  const channel = parseNumber(value);
+  if (channel === null) return null;
+  if (channel >= 1 && channel <= 14) return "24";
+  if (channel >= 32 && channel <= 196) return "5";
   return null;
 }
 
@@ -186,12 +228,47 @@ function mergeRows(target: CsvMeasurementRow, source: CsvMeasurementRow): CsvMea
     point_id: target.point_id || source.point_id,
     x_px: target.x_px ?? source.x_px ?? null,
     y_px: target.y_px ?? source.y_px ?? null,
-    rssi_24ghz: target.rssi_24ghz ?? source.rssi_24ghz ?? null,
-    rssi_5ghz: target.rssi_5ghz ?? source.rssi_5ghz ?? null,
-    rssi_6ghz: target.rssi_6ghz ?? source.rssi_6ghz ?? null,
+    coordinate_kind: target.coordinate_kind ?? source.coordinate_kind ?? null,
+    rssi_24ghz: rssiValue(target.rssi_24ghz, source.rssi_24ghz),
+    rssi_5ghz: rssiValue(target.rssi_5ghz, source.rssi_5ghz),
+    rssi_6ghz: rssiValue(target.rssi_6ghz, source.rssi_6ghz),
     distance_m: target.distance_m ?? source.distance_m ?? null,
     timestamp: target.timestamp || source.timestamp || null,
   };
+}
+
+type BandKey = "24" | "5" | "6";
+
+function bandRssiField(band: BandKey): "rssi_24ghz" | "rssi_5ghz" | "rssi_6ghz" {
+  return band === "24" ? "rssi_24ghz" : band === "5" ? "rssi_5ghz" : "rssi_6ghz";
+}
+
+type MacBandStat = { mac: string; count: number; hasSsid: boolean };
+
+// A TamoGraph-style survey CSV records one reading per detected AP per dwell
+// point, so neighboring networks (other households, guest/hidden SSIDs) show
+// up alongside the router actually being surveyed. Each Signal Level page in
+// a TamoGraph report is scoped to exactly one MAC per band; naively taking
+// "strongest reading per band at each coordinate" (the old behavior here)
+// lets a neighbor's beacon leak in wherever it happens to be marginally
+// stronger, or whenever the target router's own beacon wasn't captured at
+// that exact dwell point. Instead, per band, treat whichever MAC is seen most
+// consistently as the surveyed router (highest sample count — a real target
+// router responds far more often than any transient neighbor), preferring a
+// MAC with a visible SSID over a blank/hidden sibling BSSID when counts are
+// close (a router's hidden secondary radio can rival the main one in count).
+function selectDominantMacByBand(statsByBand: Map<BandKey, Map<string, MacBandStat>>): Map<BandKey, string> {
+  const dominant = new Map<BandKey, string>();
+  for (const [band, macStats] of statsByBand) {
+    const candidates = [...macStats.values()];
+    if (!candidates.length) continue;
+    candidates.sort((a, b) => {
+      if (a.hasSsid !== b.hasSsid) return a.hasSsid ? -1 : 1;
+      return b.count - a.count;
+    });
+    dominant.set(band, candidates[0].mac);
+  }
+  return dominant;
 }
 
 export function parseMeasurementCsv(text: string): CsvImportResult {
@@ -202,7 +279,10 @@ export function parseMeasurementCsv(text: string): CsvImportResult {
   const delimiter = detectDelimiter(normalized);
   const lines = splitCsvRecords(normalized);
   const headers = splitCsvLine(lines[0], delimiter).map(normalizeHeader);
-  const rowsById = new Map<string, CsvMeasurementRow>();
+  const generatedIdsByCoordinate = new Map<string, string>();
+
+  const parsedRows: { key: string; parsed: CsvMeasurementRow; mac: string | null; band: BandKey | null }[] = [];
+  const macStatsByBand = new Map<BandKey, Map<string, MacBandStat>>();
 
   for (let lineIndex = 1; lineIndex < lines.length; lineIndex += 1) {
     const values = splitCsvLine(lines[lineIndex], delimiter);
@@ -210,16 +290,29 @@ export function parseMeasurementCsv(text: string): CsvImportResult {
     headers.forEach((header, index) => {
       row[header] = values[index] ?? "";
     });
-    const pointId = normalizeCsvPointId(
-      pickFuzzy(row, ["point_id", "id", "point", "ponto", "ambiente_numero"], ["ponto", "point"]),
-      lineIndex,
-    );
-    const band = normalizeBand(pickFuzzy(row, ["band", "banda", "frequency", "frequencia", "freq"]));
+    const xPick = pickCoordinate(row, coordinateKeys, ["x_px", "coord_x", "pos_x", "latitude"]);
+    const yPick = pickCoordinate(row, coordinateYKeys, ["y_px", "coord_y", "pos_y", "longitude"]);
+    const x_px = parseNumber(xPick.value);
+    const y_px = parseNumber(yPick.value);
+    const coordKey = coordinateKey(x_px, y_px);
+    const rawPointId = pickFuzzy(row, ["point_id", "id", "point", "ponto", "ambiente_numero"], ["ponto", "point"]);
+    let pointId = normalizeCsvPointId(rawPointId);
+    if (!pointId && coordKey) {
+      if (!generatedIdsByCoordinate.has(coordKey)) generatedIdsByCoordinate.set(coordKey, `P${generatedIdsByCoordinate.size + 1}`);
+      pointId = generatedIdsByCoordinate.get(coordKey) as string;
+    }
+    if (!pointId) pointId = normalizeCsvPointId(undefined, lineIndex);
+    const band =
+      normalizeBand(pickFuzzy(row, ["band", "banda", "frequency", "frequencia", "freq"])) ??
+      normalizeBandFromChannel(pickFuzzy(row, ["channel", "ch", "canal"]));
     const genericRssi = parseNumber(pickFuzzy(row, ["rssi", "dbm", "signal", "sinal"]));
+    const mac = pickFuzzy(row, ["mac", "bssid"])?.trim().toUpperCase() || null;
+    const ssid = pickFuzzy(row, ["ssid"])?.trim() || "";
     const parsed: CsvMeasurementRow = {
       point_id: pointId,
-      x_px: parseNumber(pickFuzzy(row, coordinateKeys, ["x_px", "coord_x", "pos_x"])),
-      y_px: parseNumber(pickFuzzy(row, coordinateYKeys, ["y_px", "coord_y", "pos_y"])),
+      x_px,
+      y_px,
+      coordinate_kind: xPick.kind === "survey" || yPick.kind === "survey" ? "survey" : xPick.kind ?? yPick.kind ?? null,
       rssi_24ghz: parseNumber(pickBandRssi(row, "24")),
       rssi_5ghz: parseNumber(pickBandRssi(row, "5")),
       rssi_6ghz: parseNumber(pickBandRssi(row, "6")),
@@ -234,13 +327,231 @@ export function parseMeasurementCsv(text: string): CsvImportResult {
       continue;
     }
 
-    const key = normalizeCsvPointId(parsed.point_id).toLowerCase();
+    if (mac && band) {
+      const macStats = macStatsByBand.get(band) ?? new Map<string, MacBandStat>();
+      const stat = macStats.get(mac) ?? { mac, count: 0, hasSsid: false };
+      stat.count += 1;
+      if (ssid) stat.hasSsid = true;
+      macStats.set(mac, stat);
+      macStatsByBand.set(band, macStats);
+    }
+
+    const key = rawPointId ? normalizeCsvPointId(parsed.point_id).toLowerCase() : coordKey ?? normalizeCsvPointId(parsed.point_id).toLowerCase();
+    parsedRows.push({ key, parsed, mac, band });
+  }
+
+  const dominantMacByBand = selectDominantMacByBand(macStatsByBand);
+
+  const rowsById = new Map<string, CsvMeasurementRow>();
+  for (const { key, parsed, mac, band } of parsedRows) {
+    if (mac && band) {
+      const dominantMac = dominantMacByBand.get(band);
+      if (dominantMac && mac !== dominantMac) {
+        parsed[bandRssiField(band)] = null;
+      }
+    }
     rowsById.set(key, rowsById.has(key) ? mergeRows(rowsById.get(key) as CsvMeasurementRow, parsed) : parsed);
   }
 
   const rows = [...rowsById.values()];
   const hasCoordinates = rows.some((row) => row.x_px !== null && row.x_px !== undefined && row.y_px !== null && row.y_px !== undefined);
   return { rows, hasCoordinates, errors };
+}
+
+function rounded(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function scaleCoordinate(value: number, sourceMin: number, sourceMax: number, targetMin: number, targetMax: number): number {
+  const sourceRange = sourceMax - sourceMin;
+  if (!Number.isFinite(sourceRange) || Math.abs(sourceRange) < Number.EPSILON) return rounded((targetMin + targetMax) / 2);
+  const clampedValue = clamp(value, sourceMin, sourceMax);
+  return rounded(targetMin + ((clampedValue - sourceMin) / sourceRange) * (targetMax - targetMin));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function percentile(values: number[], ratio: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = clamp(Math.round((sorted.length - 1) * ratio), 0, sorted.length - 1);
+  return sorted[index];
+}
+
+function robustRange(values: number[]): { min: number; max: number } {
+  const min = percentile(values, 0.01);
+  const max = percentile(values, 0.99);
+  if (Math.abs(max - min) >= Number.EPSILON) return { min, max };
+  return {
+    min: values.reduce((current, value) => Math.min(current, value), Number.POSITIVE_INFINITY),
+    max: values.reduce((current, value) => Math.max(current, value), Number.NEGATIVE_INFINITY),
+  };
+}
+
+// True (non-percentile) minimum. Used as the metric placement anchor: since
+// robustRange's "min" is the 1st percentile, ~1% of legitimate (non-sentinel)
+// points sit below it by construction, which placed them at negative pixel
+// coordinates ("fora da planta") even though nothing was actually wrong with
+// that reading. The anchor must be the true minimum so every surviving point
+// maps to x_px/y_px >= the margin, never negative.
+function trueMin(values: number[]): number {
+  return values.reduce((current, value) => Math.min(current, value), Number.POSITIVE_INFINITY);
+}
+
+// Small constant offset (px) so metrically-placed points don't sit exactly on
+// the plan's (0,0) corner. NOT a stretch-to-fill margin: the true surveyed
+// footprint size is preserved as-is via pxPerMeter.
+const SURVEY_METRIC_MARGIN_PX = 24;
+// A per-row survey value further than this many multiples of the robust
+// (1st-99th percentile) spread from the median is treated as a corrupted
+// sentinel (e.g. GPS-lock-failure values like 3.66e7) and dropped.
+const SURVEY_OUTLIER_SPREAD_FACTOR = 500;
+// If more than this fraction of placed points fall outside the floorplan
+// canvas after metric placement, warn the user (likely crop/calibration
+// mismatch upstream, not a CSV import bug).
+const SURVEY_OUT_OF_BOUNDS_WARN_RATIO = 0.1;
+
+function issue(severity: ValidationIssue["severity"], message: string, code: string): ValidationIssue {
+  return { severity, message, code };
+}
+
+// Median absolute deviation: like the median's own "spread", but (unlike a
+// min/max range) it stays robust even when a small number of the values are
+// wildly corrupted sentinels, because up to ~50% of samples can be extreme
+// outliers before this statistic itself gets pulled off course.
+function medianAbsoluteDeviation(values: number[], median: number): number {
+  return percentile(values.map((value) => Math.abs(value - median)), 0.5);
+}
+
+function isSentinelOutlier(value: number, median: number, mad: number): boolean {
+  const safeMad = Math.max(mad, 1e-2);
+  return Math.abs(value - median) > safeMad * SURVEY_OUTLIER_SPREAD_FACTOR;
+}
+
+export function prepareCsvRowsForFloorplan(
+  rows: CsvMeasurementRow[],
+  floorplan: { width: number; height: number },
+  pxPerMeter = 0,
+): { rows: CsvMeasurementRow[]; issues: ValidationIssue[] } {
+  const issues: ValidationIssue[] = [];
+  const surveyRows = rows.filter(
+    (row) => row.coordinate_kind === "survey" && row.x_px !== null && row.x_px !== undefined && row.y_px !== null && row.y_px !== undefined,
+  );
+  if (!surveyRows.length) return { rows, issues };
+
+  const xValues = surveyRows.map((row) => row.x_px as number);
+  const yValues = surveyRows.map((row) => row.y_px as number);
+  const xMedian = percentile(xValues, 0.5);
+  const yMedian = percentile(yValues, 0.5);
+  const xMad = medianAbsoluteDeviation(xValues, xMedian);
+  const yMad = medianAbsoluteDeviation(yValues, yMedian);
+  const isRowSentinel = (x: number, y: number) => isSentinelOutlier(x, xMedian, xMad) || isSentinelOutlier(y, yMedian, yMad);
+
+  // Reference corner for isotropic placement: the robust (1st-99th
+  // percentile) bounding box, computed only from rows that survive sentinel
+  // rejection so a single corrupted reading can't drag the reference corner.
+  const cleanSurveyRows = surveyRows.filter((row) => !isRowSentinel(row.x_px as number, row.y_px as number));
+  const cleanXValues = cleanSurveyRows.length ? cleanSurveyRows.map((row) => row.x_px as number) : xValues;
+  const cleanYValues = cleanSurveyRows.length ? cleanSurveyRows.map((row) => row.y_px as number) : yValues;
+  const xRange = robustRange(cleanXValues);
+  const yRange = robustRange(cleanYValues);
+  const xTrueMin = trueMin(cleanXValues);
+  const yTrueMin = trueMin(cleanYValues);
+
+  const isCalibrated = Number.isFinite(pxPerMeter) && pxPerMeter > 0;
+
+  let normalized: CsvMeasurementRow[];
+  if (isCalibrated) {
+    // Survey X/Y are real-world meters. Map both axes with the SAME
+    // pxPerMeter (isotropic) so the true aspect ratio of the walked survey
+    // is preserved instead of being stretched to fill the canvas. Anchored on
+    // the true min (not a percentile) so no surviving point can land negative.
+    normalized = rows.map((row) => {
+      if (row.coordinate_kind !== "survey" || row.x_px === null || row.x_px === undefined || row.y_px === null || row.y_px === undefined) return row;
+      if (isRowSentinel(row.x_px, row.y_px)) {
+        return { ...row, x_px: null, y_px: null, coordinate_kind: null };
+      }
+      return {
+        ...row,
+        x_px: rounded(SURVEY_METRIC_MARGIN_PX + (row.x_px - xTrueMin) * pxPerMeter),
+        y_px: rounded(SURVEY_METRIC_MARGIN_PX + (row.y_px - yTrueMin) * pxPerMeter),
+        coordinate_kind: "pixel" as const,
+      };
+    });
+  } else {
+    // Fallback (best-effort only): no metric scale yet, so stretch the
+    // robust survey range to fill the canvas. Flagged to the caller so the
+    // UI can tell the user this is an approximation pending calibration.
+    const paddingX = clamp(floorplan.width * 0.04, 12, 48);
+    const paddingY = clamp(floorplan.height * 0.04, 12, 48);
+    const maxTargetX = Math.max(paddingX, floorplan.width - paddingX - 1);
+    const maxTargetY = Math.max(paddingY, floorplan.height - paddingY - 1);
+    normalized = rows.map((row) => {
+      if (row.coordinate_kind !== "survey" || row.x_px === null || row.x_px === undefined || row.y_px === null || row.y_px === undefined) return row;
+      return {
+        ...row,
+        x_px: scaleCoordinate(row.x_px, xRange.min, xRange.max, paddingX, maxTargetX),
+        y_px: scaleCoordinate(row.y_px, yRange.min, yRange.max, paddingY, maxTargetY),
+        coordinate_kind: "pixel" as const,
+      };
+    });
+    issues.push(
+      issue(
+        "warning",
+        "Planta ainda sem escala calibrada: os pontos do CSV de survey foram ajustados para caber na imagem (posicionamento aproximado). Calibre a escala e reimporte o CSV para posicionar os pontos com precisao metrica.",
+        "csv_survey_uncalibrated",
+      ),
+    );
+  }
+
+  const cellSize = Math.max(8, Math.ceil(Math.sqrt(Math.max(floorplan.width * floorplan.height, 1) / SURVEY_IMPORT_TARGET_POINTS)));
+  const buckets = new Map<string, { row: CsvMeasurementRow; sumX: number; sumY: number; count: number }>();
+  const passthrough: CsvMeasurementRow[] = [];
+
+  for (const row of normalized) {
+    if (row.x_px === null || row.x_px === undefined || row.y_px === null || row.y_px === undefined) {
+      passthrough.push(row);
+      continue;
+    }
+    const key = `${Math.round(row.x_px / cellSize)}:${Math.round(row.y_px / cellSize)}`;
+    const bucket = buckets.get(key);
+    if (!bucket) {
+      buckets.set(key, { row, sumX: row.x_px, sumY: row.y_px, count: 1 });
+      continue;
+    }
+    bucket.row = mergeRows(bucket.row, row);
+    bucket.sumX += row.x_px;
+    bucket.sumY += row.y_px;
+    bucket.count += 1;
+  }
+
+  const consolidated = [...buckets.values()].map((bucket, index) => ({
+    ...bucket.row,
+    point_id: `P${index + 1}`,
+    x_px: rounded(bucket.sumX / bucket.count),
+    y_px: rounded(bucket.sumY / bucket.count),
+    coordinate_kind: "pixel" as const,
+  }));
+
+  if (isCalibrated && consolidated.length) {
+    const outOfBounds = consolidated.filter(
+      (row) => row.x_px < 0 || row.x_px >= floorplan.width || row.y_px < 0 || row.y_px >= floorplan.height,
+    );
+    if (outOfBounds.length / consolidated.length > SURVEY_OUT_OF_BOUNDS_WARN_RATIO) {
+      const pct = Math.round((outOfBounds.length / consolidated.length) * 100);
+      issues.push(
+        issue(
+          "warning",
+          `${outOfBounds.length} de ${consolidated.length} pontos do survey (${pct}%) ficaram fora da planta apos o posicionamento metrico. Verifique se o recorte e a calibracao da planta correspondem a area realmente percorrida.`,
+          "csv_survey_out_of_bounds",
+        ),
+      );
+    }
+  }
+
+  return { rows: [...consolidated, ...passthrough], issues };
 }
 
 function csvValue(value: string | number | null | undefined): string {

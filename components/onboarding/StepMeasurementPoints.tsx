@@ -10,11 +10,13 @@ import type { MeasurementPoint } from "@/types/measurement";
 import { FloorplanCanvas } from "./FloorplanCanvas";
 import { IssueList } from "./StepUploadFloorplan";
 
+const MAX_VISIBLE_POINT_BUTTONS = 600;
+
 type StepMeasurementPointsProps = {
   floorFile: File | null;
   floorplan: FloorplanImage;
   points: MeasurementPoint[];
-  ap: RouterPlacement | null;
+  aps: RouterPlacement[];
   pxPerMeter: number;
   onChange: (points: MeasurementPoint[]) => void;
 };
@@ -53,7 +55,7 @@ export function StepMeasurementPoints({
   floorFile,
   floorplan,
   points,
-  ap,
+  aps,
   pxPerMeter,
   onChange,
 }: StepMeasurementPointsProps) {
@@ -64,9 +66,10 @@ export function StepMeasurementPoints({
     () => points.find((point) => point.point_id === selectedPointId) ?? points[0] ?? null,
     [points, selectedPointId],
   );
+  const visiblePointButtons = points.length > MAX_VISIBLE_POINT_BUTTONS ? points.slice(0, MAX_VISIBLE_POINT_BUTTONS) : points;
 
   function commit(next: MeasurementPoint[]) {
-    onChange(withComputedDistances(next, ap, pxPerMeter));
+    onChange(withComputedDistances(next, aps, pxPerMeter));
   }
 
   function addPoint(coordinate: Coordinate) {
@@ -104,7 +107,7 @@ export function StepMeasurementPoints({
     setDetail(null);
     try {
       const result = await detectMeasurementPoints(floorFile);
-      const next = withComputedDistances(renumber(result.points), ap, pxPerMeter);
+      const next = withComputedDistances(renumber(result.points), aps, pxPerMeter);
       commit(next);
       setSelectedPointId(next[0]?.point_id ?? null);
       setDetail(`${result.detail} ${next.length} ponto(s).`);
@@ -138,7 +141,7 @@ export function StepMeasurementPoints({
       <FloorplanCanvas
         floorplan={floorplan}
         points={points}
-        ap={ap}
+        aps={aps}
         selectedPointId={selectedPointId}
         onCanvasClick={addPoint}
         onPointDrag={updatePoint}
@@ -147,7 +150,7 @@ export function StepMeasurementPoints({
 
       <div className="pointEditor">
         <div className="pointList" aria-label="Lista de pontos">
-          {points.map((point) => (
+          {visiblePointButtons.map((point) => (
             <button
               key={point.point_id}
               type="button"
@@ -158,6 +161,11 @@ export function StepMeasurementPoints({
             </button>
           ))}
         </div>
+        {visiblePointButtons.length < points.length && (
+          <div className="inlineNotice">
+            Mostrando {visiblePointButtons.length} de {points.length} pontos na lista. Todos continuam disponiveis para validacao e geracao.
+          </div>
+        )}
 
         {selectedPoint && (
           <div className="formGrid three compact">

@@ -1,28 +1,13 @@
 "use client";
 
-import type { PointerEvent } from "react";
-import { useEffect, useRef, useState } from "react";
-import { Flame, Info, Loader2, RadioTower, ScanLine, Trash2, Wifi } from "lucide-react";
-import { materialLossProfiles } from "@/domain/heatmap/attenuation";
+import { Flame, Info, Loader2, RadioTower, ScanLine, Wifi } from "lucide-react";
 import { DEFAULT_IDW_POWER } from "@/domain/heatmap/idw";
-import {
-  type AutoWallDetectionResult,
-  createFloorplanMaterialSampler,
-  detectWallSegmentsFromFloorplan,
-  detectWallMaterialFromTrace,
-  type FloorplanMaterialSampler,
-  type MaterialTraceAnalysis,
-} from "@/domain/heatmap/materialDetection";
 import { hasBlockingIssues } from "@/domain/heatmap/validation";
-import type { FloorplanImage } from "@/types/floorplan";
-import type { RfPoint, WallMaterial, WallSegment } from "@/types/heatmap";
 import type { ValidationIssue } from "@/types/measurement";
 import { IssueList } from "./StepUploadFloorplan";
 
 type StepGenerateHeatmapProps = {
   issues: ValidationIssue[];
-  floorplan: FloorplanImage;
-  walls: WallSegment[];
   opacity: number;
   power: number;
   interpolationRadiusM: number;
@@ -34,14 +19,11 @@ type StepGenerateHeatmapProps = {
   onInterpolationRadiusChange: (radiusM: number) => void;
   onGaussianBlurChange: (blurPx: number) => void;
   onUseWallAttenuationChange: (enabled: boolean) => void;
-  onWallsChange: (walls: WallSegment[]) => void;
   onGenerate: () => void;
 };
 
 export function StepGenerateHeatmap({
   issues,
-  floorplan,
-  walls,
   opacity,
   power,
   interpolationRadiusM,
@@ -53,7 +35,6 @@ export function StepGenerateHeatmap({
   onInterpolationRadiusChange,
   onGaussianBlurChange,
   onUseWallAttenuationChange,
-  onWallsChange,
   onGenerate,
 }: StepGenerateHeatmapProps) {
   const blocked = hasBlockingIssues(issues);
@@ -171,12 +152,6 @@ export function StepGenerateHeatmap({
         <div className="rfCapability"><Wifi size={15} aria-hidden="true" /> IDW continuo + decaimento ponderado</div>
       </div>
 
-      <RfLayoutEditor
-        floorplan={floorplan}
-        walls={walls}
-        onWallsChange={onWallsChange}
-      />
-
       <IssueList issues={issues} />
 
       <button
@@ -191,281 +166,5 @@ export function StepGenerateHeatmap({
         {isGenerating ? "Gerando heatmaps..." : "Gerar tri-band RF"}
       </button>
     </section>
-  );
-}
-
-type RfLayoutEditorProps = {
-  floorplan: FloorplanImage;
-  walls: WallSegment[];
-  onWallsChange: (walls: WallSegment[]) => void;
-};
-
-const wallMaterialOptions: { value: WallMaterial }[] = [
-  { value: "drywall" },
-  { value: "glass" },
-  { value: "wood" },
-  { value: "brick" },
-  { value: "concrete" },
-  { value: "reinforced_concrete" },
-  { value: "stone" },
-  { value: "metal" },
-];
-
-function materialLabel(material: WallMaterial): string {
-  return materialLossProfiles[material]?.label ?? material;
-}
-
-function makeId(prefix: string): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.round(Math.random() * 1000)}`;
-}
-
-function wallKey(wall: WallSegment): string {
-  return wall.id ?? `${wall.start.x}:${wall.start.y}:${wall.end.x}:${wall.end.y}:${wall.material}`;
-}
-
-function RfLayoutEditor({ floorplan, walls, onWallsChange }: RfLayoutEditorProps) {
-  const svgRef = useRef<SVGSVGElement>(null);
-  const [material, setMaterial] = useState<WallMaterial>("concrete");
-  const [materialSampler, setMaterialSampler] = useState<FloorplanMaterialSampler | null>(null);
-  const [samplerReady, setSamplerReady] = useState(false);
-  const [autoDetection, setAutoDetection] = useState<AutoWallDetectionResult | null>(null);
-  const [isDetectingWalls, setIsDetectingWalls] = useState(false);
-  const [lastMaterialDetection, setLastMaterialDetection] = useState<MaterialTraceAnalysis | null>(null);
-  const [pendingPoint, setPendingPoint] = useState<RfPoint | null>(null);
-  const [hoverPoint, setHoverPoint] = useState<RfPoint | null>(null);
-  const [selectedWallKey, setSelectedWallKey] = useState<string | null>(null);
-  const autoDetectionKeyRef = useRef<string | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    setMaterialSampler(null);
-    setSamplerReady(false);
-    setAutoDetection(null);
-    setLastMaterialDetection(null);
-    setSelectedWallKey(null);
-
-    createFloorplanMaterialSampler(floorplan.dataUrl, floorplan.width, floorplan.height)
-      .then((sampler) => {
-        if (active) setMaterialSampler(sampler);
-      })
-      .catch(() => {
-        if (active) setMaterialSampler(null);
-      })
-      .finally(() => {
-        if (active) setSamplerReady(true);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [floorplan.dataUrl, floorplan.width, floorplan.height]);
-
-  useEffect(() => {
-    if (!materialSampler || !samplerReady || walls.length) return;
-    const key = `${floorplan.fileName}-${floorplan.width}x${floorplan.height}-${floorplan.fileSize}`;
-    if (autoDetectionKeyRef.current === key) return;
-    autoDetectionKeyRef.current = key;
-    const timer = window.setTimeout(() => runAutoWallDetection(), 0);
-    return () => window.clearTimeout(timer);
-  }, [floorplan.fileName, floorplan.fileSize, floorplan.width, floorplan.height, materialSampler, samplerReady, walls.length]);
-
-  useEffect(() => {
-    if (!selectedWallKey) return;
-    if (!walls.some((wall) => wallKey(wall) === selectedWallKey)) {
-      setSelectedWallKey(null);
-    }
-  }, [selectedWallKey, walls]);
-
-  function coordinateFromEvent(event: PointerEvent<SVGSVGElement>): RfPoint {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
-    return {
-      x: Math.round((((event.clientX - rect.left) / rect.width) * floorplan.width) * 10) / 10,
-      y: Math.round((((event.clientY - rect.top) / rect.height) * floorplan.height) * 10) / 10,
-    };
-  }
-
-  function handleCanvasClick(event: PointerEvent<SVGSVGElement>) {
-    const point = coordinateFromEvent(event);
-    if (!pendingPoint) {
-      setSelectedWallKey(null);
-      setPendingPoint(point);
-      return;
-    }
-
-    if (Math.hypot(point.x - pendingPoint.x, point.y - pendingPoint.y) < 8) {
-      setPendingPoint(null);
-      return;
-    }
-
-    const detected = detectWallMaterialFromTrace(materialSampler, pendingPoint, point, material);
-    const wallMaterial = detected.material;
-
-    onWallsChange([
-      ...walls,
-      {
-        id: makeId("wall"),
-        start: pendingPoint,
-        end: point,
-        material: wallMaterial,
-      },
-    ]);
-    setMaterial(wallMaterial);
-    setLastMaterialDetection(detected);
-    setSelectedWallKey(null);
-    setPendingPoint(null);
-    setHoverPoint(null);
-  }
-
-  function handleWallPointerDown(event: PointerEvent<SVGGElement>, key: string) {
-    event.preventDefault();
-    event.stopPropagation();
-    setSelectedWallKey(key);
-    setPendingPoint(null);
-    setHoverPoint(null);
-  }
-
-  function undoLastWall() {
-    onWallsChange(walls.slice(0, -1));
-    setPendingPoint(null);
-    setHoverPoint(null);
-  }
-
-  function removeSelectedWall() {
-    if (!selectedWallKey) return;
-    onWallsChange(walls.filter((wall) => wallKey(wall) !== selectedWallKey));
-    setSelectedWallKey(null);
-    setPendingPoint(null);
-    setHoverPoint(null);
-  }
-
-  function runAutoWallDetection() {
-    if (!materialSampler) return;
-    setIsDetectingWalls(true);
-    window.requestAnimationFrame(() => {
-      const detected = detectWallSegmentsFromFloorplan(materialSampler, material);
-      onWallsChange(detected.walls);
-      setAutoDetection(detected);
-      setLastMaterialDetection(null);
-      if (detected.walls[0]) setMaterial(detected.walls[0].material);
-      setPendingPoint(null);
-      setHoverPoint(null);
-      setSelectedWallKey(null);
-      setIsDetectingWalls(false);
-    });
-  }
-
-  return (
-    <div className="rfLayoutEditor">
-      <div className="rfLayoutToolbar">
-        <div className="rfLayoutTitle">
-          <ScanLine size={15} aria-hidden="true" />
-          Paredes e materiais
-        </div>
-
-        <label className="field compactSelect" htmlFor="wall-material">
-          Material padrao
-          <select id="wall-material" value={material} onChange={(event) => setMaterial(event.target.value as WallMaterial)}>
-            {wallMaterialOptions.map((option) => (
-              <option key={option.value} value={option.value}>{materialLabel(option.value)}</option>
-            ))}
-          </select>
-        </label>
-
-        <button className="secondaryButton" type="button" onClick={runAutoWallDetection} disabled={!materialSampler || isDetectingWalls}>
-          {isDetectingWalls ? "Detectando..." : "Detectar paredes"}
-        </button>
-
-        <button className="secondaryButton" type="button" onClick={undoLastWall} disabled={!walls.length}>
-          Desfazer parede
-        </button>
-
-        <button className="dangerButton" type="button" onClick={removeSelectedWall} disabled={!selectedWallKey}>
-          <Trash2 size={15} aria-hidden="true" />
-          Remover parede
-        </button>
-      </div>
-
-      <div className="rfLayoutCanvas" style={{ aspectRatio: `${floorplan.width} / ${floorplan.height}` }}>
-        <img src={floorplan.dataUrl} alt="Planta para demarcacao RF" draggable={false} />
-        <svg
-          ref={svgRef}
-          viewBox={`0 0 ${floorplan.width} ${floorplan.height}`}
-          preserveAspectRatio="none"
-          onPointerDown={handleCanvasClick}
-          onPointerMove={(event) => pendingPoint && setHoverPoint(coordinateFromEvent(event))}
-          onPointerLeave={() => setHoverPoint(null)}
-        >
-          {walls.map((wall) => {
-            const key = wallKey(wall);
-            const selected = selectedWallKey === key;
-            return (
-              <g key={key} className={`rfWallGroup${selected ? " selected" : ""}`} onPointerDown={(event) => handleWallPointerDown(event, key)}>
-                <line
-                  x1={wall.start.x}
-                  y1={wall.start.y}
-                  x2={wall.end.x}
-                  y2={wall.end.y}
-                  className="rfWallHitTarget"
-                />
-                {selected && (
-                  <line
-                    x1={wall.start.x}
-                    y1={wall.start.y}
-                    x2={wall.end.x}
-                    y2={wall.end.y}
-                    className="rfWallSelectionHalo"
-                  />
-                )}
-                <line
-                  x1={wall.start.x}
-                  y1={wall.start.y}
-                  x2={wall.end.x}
-                  y2={wall.end.y}
-                  className={`rfWallLine material-${wall.material}`}
-                >
-                  <title>{materialLabel(wall.material)}</title>
-                </line>
-              </g>
-            );
-          })}
-          {pendingPoint && hoverPoint && (
-            <line
-              x1={pendingPoint.x}
-              y1={pendingPoint.y}
-              x2={hoverPoint.x}
-              y2={hoverPoint.y}
-              className={`rfWallPreview material-${material}`}
-            />
-          )}
-          {pendingPoint && (
-            <g className="rfPendingPoint" transform={`translate(${pendingPoint.x} ${pendingPoint.y})`}>
-              <circle r="9" />
-              <text y="-13">Inicio da parede</text>
-            </g>
-          )}
-        </svg>
-      </div>
-
-      <div className="rfLayoutSummary" aria-label="Resumo de paredes e salas">
-        <span>{walls.length} parede(s)</span>
-        <span>{samplerReady ? "Deteccao automatica ativa" : "Lendo tracado da planta"}</span>
-        {autoDetection && (
-          <span>
-            Auto: {autoDetection.horizontalCount} H / {autoDetection.verticalCount} V
-          </span>
-        )}
-        {lastMaterialDetection && (
-          <span>
-            Material detectado: {materialLabel(lastMaterialDetection.material)} ({Math.round(lastMaterialDetection.confidence * 100)}%)
-          </span>
-        )}
-        {selectedWallKey && <span>Parede selecionada</span>}
-        <span>{pendingPoint ? "Segundo clique finaliza o ajuste" : "Clique para ajuste manual"}</span>
-      </div>
-    </div>
   );
 }

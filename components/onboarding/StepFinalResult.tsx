@@ -7,7 +7,6 @@ import {
   Eye,
   EyeOff,
   FileJson,
-  FileText,
   ImageDown,
   Layers,
   LocateFixed,
@@ -20,8 +19,6 @@ import {
 import { rssiLegendTicks } from "@/domain/heatmap/colorScale";
 import {
   buildProjectJson,
-  createSimplePdfReport,
-  downloadBlob,
   downloadDataUrl,
   downloadTextFile,
   exportCsv,
@@ -34,7 +31,7 @@ import type { MeasurementPoint } from "@/types/measurement";
 type StepFinalResultProps = {
   floorplan: FloorplanImage;
   scale: ScaleCalibration;
-  ap: RouterPlacement | null;
+  aps: RouterPlacement[];
   points: MeasurementPoint[];
   walls: WallSegment[];
   result: HeatmapResult | null;
@@ -48,10 +45,35 @@ type LayerToggleProps = {
   onClick: () => void;
 };
 
+const MAX_RENDERED_RESULT_POINTS = 900;
+
+function sampledPoints(points: MeasurementPoint[], limit: number): MeasurementPoint[] {
+  if (points.length <= limit) return points;
+  const sampled: MeasurementPoint[] = [];
+  const used = new Set<string>();
+  const step = (points.length - 1) / Math.max(limit - 1, 1);
+
+  for (let index = 0; index < limit; index += 1) {
+    const point = points[Math.round(index * step)];
+    if (!point || used.has(point.point_id)) continue;
+    sampled.push(point);
+    used.add(point.point_id);
+  }
+
+  return sampled;
+}
+
+// Kept in sync with FloorplanCanvas.tsx's marker sizing so calibration-time
+// markers and the final-result overlay read at the same relative scale.
+function markerRadiusForFloorplan(floorplan: FloorplanImage): number {
+  const size = Math.max(floorplan.width, floorplan.height);
+  return Math.round(Math.min(42, Math.max(6, size * 0.0075)) * 10) / 10;
+}
+
 export function StepFinalResult({
   floorplan,
   scale,
-  ap,
+  aps,
   points,
   walls,
   result,
@@ -61,12 +83,19 @@ export function StepFinalResult({
   const [showFloorplan, setShowFloorplan] = useState(true);
   const [showHeatmap, setShowHeatmap] = useState(true);
   const [showAp, setShowAp] = useState(true);
-  const [showPoints, setShowPoints] = useState(true);
+  const [showPoints, setShowPoints] = useState(false);
   const [showRfLayout, setShowRfLayout] = useState(true);
   const [viewerOpacity, setViewerOpacity] = useState(result?.opacity ?? 0.68);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragOrigin, setDragOrigin] = useState<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const renderedPoints = sampledPoints(points, MAX_RENDERED_RESULT_POINTS);
+  const markerRadius = markerRadiusForFloorplan(floorplan);
+  const markerTextSize = Math.max(6.5, markerRadius * 1.02);
+  const markerTextY = markerRadius * 0.34;
+  const apRadius = markerRadius * 1.25;
+  const apCoreRadius = markerRadius * 0.66;
+  const apIconSize = markerRadius * 1.18;
 
   if (!result) {
     return (
@@ -86,18 +115,7 @@ export function StepFinalResult({
     selectedBand === "24ghz" ? finalResult.heatmap24 : selectedBand === "5ghz" ? finalResult.heatmap5 : finalResult.heatmap6;
 
   function exportJson() {
-    downloadTextFile(buildProjectJson(floorplan, scale, ap, points, finalResult, walls), "wifi-heatmap-projeto.json", "application/json;charset=utf-8");
-  }
-
-  function exportPdf() {
-    const pdf = createSimplePdfReport({
-      floorplan,
-      scale,
-      ap,
-      points,
-      generatedAt: finalResult.generatedAt,
-    });
-    downloadBlob(pdf, "wifi-heatmap-relatorio.pdf");
+    downloadTextFile(buildProjectJson(floorplan, scale, aps, points, finalResult, walls), "wifi-heatmap-projeto.json", "application/json;charset=utf-8");
   }
 
   function handlePanStart(event: PointerEvent<HTMLDivElement>) {
@@ -204,17 +222,18 @@ export function StepFinalResult({
                       className={`rfWallLine material-${wall.material}`}
                     />
                   ))}
-                {showAp && ap && (
-                  <g className="rfApMarker" transform={`translate(${ap.ap_x_px} ${ap.ap_y_px})`}>
-                    <circle r="15" />
-                    <RadioTower size={22} x={-11} y={-11} />
+                {showAp && aps.map((ap) => (
+                  <g key={ap.id} className="rfApMarker" transform={`translate(${ap.ap_x_px} ${ap.ap_y_px})`}>
+                    <circle className="rfApHalo" r={apRadius} />
+                    <circle className="rfApCore" r={apCoreRadius} />
+                    <RadioTower className="rfApIcon" size={apIconSize} x={-apIconSize / 2} y={-apIconSize / 2} />
                   </g>
-                )}
+                ))}
                 {showPoints &&
-                  points.map((point) => (
+                  renderedPoints.map((point) => (
                     <g key={point.point_id} className="rfMeasurementMarker" transform={`translate(${point.x_px} ${point.y_px})`}>
-                      <circle r="11" />
-                      <text y="4">{point.point_id.replace(/^P/i, "")}</text>
+                      <circle r={markerRadius} />
+                      <text y={markerTextY} style={{ fontSize: markerTextSize }}>{point.point_id.replace(/^P/i, "")}</text>
                     </g>
                   ))}
               </svg>
@@ -349,10 +368,6 @@ export function StepFinalResult({
         <button className="secondaryButton" type="button" onClick={exportJson}>
           <FileJson size={16} />
           JSON projeto
-        </button>
-        <button className="secondaryButton" type="button" onClick={exportPdf}>
-          <FileText size={16} />
-          PDF simples
         </button>
       </div>
     </section>

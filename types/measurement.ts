@@ -26,6 +26,7 @@ export type CsvMeasurementRow = {
   point_id: string;
   x_px?: number | null;
   y_px?: number | null;
+  coordinate_kind?: "pixel" | "survey" | null;
   rssi_24ghz?: number | null;
   rssi_5ghz?: number | null;
   rssi_6ghz?: number | null;

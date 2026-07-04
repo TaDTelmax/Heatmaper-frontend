@@ -42,6 +42,31 @@ test("measurement validation catches points outside image", () => {
 });
 
 test("rssi validation rejects values outside expected dBm range", () => {
-  const issues = validateRssi([point(1, { rssi_24ghz: -10 })]);
+  const issues = validateRssi([point(1, { rssi_24ghz: -5 })]);
   assert.equal(issues.some((issue) => issue.code === "rssi_range"), true);
+});
+
+test("rssi validation accepts sparse survey rows when required bands exist", () => {
+  const issues = validateRssi([
+    point(1, { rssi_24ghz: -45, rssi_5ghz: null }),
+    point(2, { rssi_24ghz: null, rssi_5ghz: -50 }),
+  ]);
+  assert.equal(issues.some((issue) => issue.code === "rssi_required"), false);
+  assert.equal(issues.some((issue) => issue.code === "rssi_band_required"), false);
+});
+
+test("measurement validation ignores duplicate scan for large imports", () => {
+  const points = Array.from({ length: 1500 }, (_, index) => point(index + 1, { x_px: 10, y_px: 10 }));
+  const issues = validateMeasurementPoints(points, floorplan);
+  assert.equal(issues.some((issue) => issue.code === "point_duplicate_skipped"), false);
+  assert.equal(issues.some((issue) => issue.code === "point_duplicate"), false);
+});
+
+test("measurement validation ignores csv duplicate markers", () => {
+  const points = [
+    point(1, { x_px: 10, y_px: 10, source: "csv" }),
+    point(2, { x_px: 10, y_px: 10, source: "csv" }),
+  ];
+  const issues = validateMeasurementPoints(points, floorplan);
+  assert.equal(issues.some((issue) => issue.code === "point_duplicate"), false);
 });

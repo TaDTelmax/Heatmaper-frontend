@@ -96,6 +96,25 @@ export function detectWallMaterialFromTrace(
     return analysis("wood", colorConfidence, stats);
   }
 
+  // Neutral (grey/dark) pixel majority — classify by thickness + dark density,
+  // which correspond to Brazilian architectural drawing conventions:
+  //   very thin → glass or drywall (single-line wall)
+  //   medium neutral, low dark density → brick
+  //   medium neutral, high dark density → concrete
+  //   thick neutral → reinforced concrete
+  if (stats.neutralRatio > 0.50) {
+    const t = stats.thicknessPx;
+    const d = stats.darkNeutralRatio;
+    const baseConf = clamp(0.40 + stats.coverage * 0.38, 0.32, 0.80);
+    if (t <= 2.5) return analysis("glass", clamp(baseConf - 0.04, 0.28, 0.70), stats);
+    if (t <= 5 && d < 0.45) return analysis("drywall", baseConf, stats);
+    if (t <= 5) return analysis("brick", baseConf, stats);
+    if (t <= 10 && d < 0.55) return analysis("brick", baseConf, stats);
+    if (t <= 10) return analysis("concrete", baseConf, stats);
+    if (t <= 20) return analysis("concrete", clamp(baseConf + 0.04, 0.36, 0.84), stats);
+    return analysis("reinforced_concrete", clamp(baseConf + 0.06, 0.38, 0.86), stats);
+  }
+
   return analysis(fallback, clamp(0.3 + stats.coverage * 0.44, 0.24, 0.82), stats);
 }
 
@@ -107,7 +126,7 @@ export function detectWallSegmentsFromFloorplan(
     return { walls: [], horizontalCount: 0, verticalCount: 0, structuralCoverage: 0 };
   }
 
-  const scale = clamp(Math.ceil(Math.max(sampler.width, sampler.height) / 1200), 1, 5);
+  const scale = clamp(Math.ceil(Math.max(sampler.width, sampler.height) / 2400), 1, 5);
   const scaledWidth = Math.ceil(sampler.width / scale);
   const scaledHeight = Math.ceil(sampler.height / scale);
   const mask = createTraceMask(sampler, scale, scaledWidth, scaledHeight);
@@ -155,11 +174,12 @@ export function detectWallSegmentsFromFloorplan(
   const walls = dedupeWallSegments(
     wallCandidates.map((candidate, index) => {
       const wall = axisCandidateToWall(candidate, scale, sampler.width, sampler.height);
+      const detected = detectWallMaterialFromTrace(sampler, wall.start, wall.end, fallbackMaterial);
       return {
         id: `auto-wall-${index + 1}`,
         start: wall.start,
         end: wall.end,
-        material: fallbackMaterial,
+        material: detected.material,
       };
     }),
   );
