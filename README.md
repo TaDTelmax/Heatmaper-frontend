@@ -1,6 +1,8 @@
-# Wi-Fi Heatmap Frontend
+# Wi-Fi Heatmaper — Frontend
 
 Frontend Next.js para onboarding guiado de heatmap Wi-Fi.
+
+Documentacao completa do projeto: [tadtelmax.github.io/Heatmaper](https://tadtelmax.github.io/Heatmaper/).
 
 O fluxo cobre upload da planta, escala, AP, pontos de medicao dinamicos pelo CSV ou marcacao manual, RSSI, revisao, geracao IDW e exportacoes. O heatmap final e gerado no navegador usando a largura e altura originais da planta.
 
